@@ -4,6 +4,7 @@ OpenAI API interface for LLMs
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -13,6 +14,16 @@ from openevolve.config import LLMConfig
 from openevolve.llm.base import LLMInterface
 
 logger = logging.getLogger(__name__)
+
+# Try to import Azure identity libraries (optional dependency)
+try:
+    from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+    AZURE_IDENTITY_AVAILABLE = True
+except ImportError:
+    AZURE_IDENTITY_AVAILABLE = False
+    logger.warning(
+        "Azure identity libraries not available. Install with: pip install azure-identity"
+    )
 
 
 class OpenAILLM(LLMInterface):
@@ -30,6 +41,10 @@ class OpenAILLM(LLMInterface):
         self.timeout = model_cfg.timeout
         self.retries = model_cfg.retries
         self.retry_delay = model_cfg.retry_delay
+        # Azure-specific configuration (优先使用配置文件，环境变量作为后备)
+        self.api_version = model_cfg.api_version 
+        self.managed_identity_client_id = model_cfg.managed_identity_client_id 
+        
         self.api_base = model_cfg.api_base
         self.api_key = model_cfg.api_key
         self.random_seed = getattr(model_cfg, "random_seed", None)
@@ -38,19 +53,24 @@ class OpenAILLM(LLMInterface):
         # Set up API client
         # OpenAI client requires max_retries to be int, not None
         max_retries = self.retries if self.retries is not None else 0
-        self.client = openai.OpenAI(
-            api_key=self.api_key,
-            base_url=self.api_base,
-            timeout=self.timeout,
-            max_retries=max_retries,
-        )
+        
+        # Determine if we should use Azure OpenAI
+        is_azure = self.api_base and ".azure.com" in self.api_base.lower()
+        
+        if is_azure:
+            credential = DefaultAzureCredential(managed_identity_client_id = self.managed_identity_client_id)
+            token_provider = get_bearer_token_provider(
+                credential, "https://cognitiveservices.azure.com/.default")
+            self.client = openai.AzureOpenAI(azure_endpoint=self.api_base, azure_ad_token_provider=token_provider, api_version=self.api_version, timeout=self.timeout, max_retries=max_retries)
+        else:
+            self.client = openai.OpenAI(api_key=self.api_key, base_url=self.api_base, timeout=self.timeout, max_retries=max_retries)
 
         # Only log unique models to reduce duplication
         if not hasattr(logger, "_initialized_models"):
             logger._initialized_models = set()
 
         if self.model not in logger._initialized_models:
-            logger.info(f"Initialized OpenAI LLM with model: {self.model}")
+            logger.info(f"Initialized LLM with model: {self.model}")
             logger._initialized_models.add(self.model)
 
     async def generate(self, prompt: str, **kwargs) -> str:
@@ -85,6 +105,8 @@ class OpenAILLM(LLMInterface):
             # The GPT OSS series are also reasoning models
             "gpt-oss-120b",
             "gpt-oss-20b",
+            # OpenRouter models
+            "openai/",
         )
 
         # Check if this is an OpenAI reasoning model based on model name pattern

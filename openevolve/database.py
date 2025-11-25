@@ -190,7 +190,9 @@ class ProgramDatabase:
         # Novelty judge setup
         from openevolve.embedding import EmbeddingClient
         self.novelty_llm = config.novelty_llm
-        self.embedding_client = EmbeddingClient(config.embedding_model) if config.embedding_model else None
+        # Get LLM config from database config if available (for Azure settings)
+        llm_config = getattr(config, "llm_config", None)
+        self.embedding_client = EmbeddingClient(config.embedding_model, llm_config=llm_config) if config.embedding_model else None
         self.similarity_threshold = config.similarity_threshold
             
 
@@ -953,11 +955,16 @@ class ProgramDatabase:
         
         Compute cosine similarity between two vectors.
         """
-        if not vec1 or not vec2 or len(vec1) != len(vec2):
+        if not vec1 or not vec2:
             return 0.0
 
-        arr1 = np.array(vec1, dtype=np.float32)
-        arr2 = np.array(vec2, dtype=np.float32)
+        # Convert to numpy arrays and flatten if needed (handle 2D arrays)
+        arr1 = np.array(vec1, dtype=np.float32).flatten()
+        arr2 = np.array(vec2, dtype=np.float32).flatten()
+        
+        if len(arr1) != len(arr2):
+            logger.warning(f"Vector lengths do not match: {len(arr1)} != {len(arr2)}")
+            return 0.0
 
         norm_a = np.linalg.norm(arr1)
         norm_b = np.linalg.norm(arr2)

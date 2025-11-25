@@ -155,6 +155,8 @@ class OpenEvolve:
             self.config.database.random_seed = self.config.random_seed
 
         self.config.database.novelty_llm = self.llm_ensemble
+        # Pass LLM config to database so embedding client can use Azure settings
+        self.config.database.llm_config = self.config.llm
         self.database = ProgramDatabase(self.config.database)
 
         self.evaluator = Evaluator(

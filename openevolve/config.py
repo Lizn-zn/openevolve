@@ -44,6 +44,11 @@ class LLMModelConfig:
     
     # Reasoning parameters
     reasoning_effort: Optional[str] = None
+    
+    # Azure-specific configuration
+    use_azure_ad: Optional[bool] = None
+    managed_identity_client_id: Optional[str] = None
+    api_version: Optional[str] = None
 
 
 @dataclass
@@ -131,6 +136,9 @@ class LLMConfig(LLMModelConfig):
             "retry_delay": self.retry_delay,
             "random_seed": self.random_seed,
             "reasoning_effort": self.reasoning_effort,
+            "use_azure_ad": getattr(self, "use_azure_ad", None),
+            "managed_identity_client_id": getattr(self, "managed_identity_client_id", None),
+            "api_version": getattr(self, "api_version", None),
         }
         self.update_model_params(shared_config)
 
@@ -184,6 +192,9 @@ class LLMConfig(LLMModelConfig):
             "retry_delay": self.retry_delay,
             "random_seed": self.random_seed,
             "reasoning_effort": self.reasoning_effort,
+            "use_azure_ad": getattr(self, "use_azure_ad", None),
+            "managed_identity_client_id": getattr(self, "managed_identity_client_id", None),
+            "api_version": getattr(self, "api_version", None),
         }
         self.update_model_params(shared_config)
 
