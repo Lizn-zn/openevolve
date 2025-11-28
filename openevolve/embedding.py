@@ -95,11 +95,7 @@ def get_client_model(model_name: str, llm_config=None) -> Tuple[Union[openai.Ope
         model_to_use = model_name.split("openrouter-")[-1]
         
         # Get OpenRouter configuration: 优先使用 llm_config，环境变量作为后备
-        api_key = os.getenv("OPENAI_API_KEY") 
-        if not api_key:
-            raise ValueError(
-                "OpenRouter API key not found. Set OPENAI_API_KEY or OPENROUTER_API_KEY environment variable"
-            )
+        api_key = os.getenv("OPENROUTER_API_KEY") 
         
         client = openai.OpenAI(
             api_key=api_key,

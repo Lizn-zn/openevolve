@@ -981,7 +981,10 @@ class ProgramDatabase:
         Use LLM to judge if a program is novel compared to a similar existing program
         """
         import asyncio
+        import nest_asyncio
         from openevolve.novelty_judge import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG
+        
+        nest_asyncio.apply()  # 允许嵌套事件循环
         
         user_msg = NOVELTY_USER_MSG.format(
             language=program.language,
@@ -997,34 +1000,27 @@ class ProgramDatabase:
                 )
             )
 
-            if content is None or content is None:
+            if not content:
                 logger.warning("Novelty LLM returned empty response")
                 return True
 
-            content = content.strip()
-
-            # Parse the response
-            NOVEL_i = content.upper().find("NOVEL")
-            NOT_NOVEL_i = content.upper().find("NOT NOVEL")
+            content_upper = content.strip().upper()
+            novel_idx = content_upper.find("NOVEL")
+            not_novel_idx = content_upper.find("NOT NOVEL")
             
-            if NOVEL_i == -1 and NOT_NOVEL_i == -1:
+            if novel_idx == -1 and not_novel_idx == -1:
                 logger.warning(f"Unexpected novelty LLM response: {content}")
-                return True  # Assume novel if we can't parse
+                return True
             
-            if NOVEL_i != -1 and NOT_NOVEL_i != -1:
-                # Both found, take the one that appears first
-                is_novel = NOVEL_i < NOT_NOVEL_i
-            elif NOVEL_i != -1:
-                is_novel = True
-            else:
-                is_novel = False
-                
-            return is_novel
+            # 如果两个都找到，看哪个在前
+            if novel_idx != -1 and not_novel_idx != -1:
+                return novel_idx < not_novel_idx
+            
+            return novel_idx != -1
 
         except Exception as e:
             logger.error(f"Error in novelty LLM check: {e}")
-    
-        return True
+            return True
     
     def _is_novel(self, program_id: int, island_idx: int) -> bool:
         """
@@ -1052,7 +1048,7 @@ class ProgramDatabase:
             other = self.programs[pid]
             
             if other.embedding is None:
-                logger.log("Warning: Program %s has no embedding, skipping similarity check", other.id)
+                logger.warning("Warning: Program %s has no embedding, skipping similarity check", other.id)
                 continue
             
             similarity = self._cosine_similarity(embd, other.embedding)

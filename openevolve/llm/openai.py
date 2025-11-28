@@ -165,19 +165,19 @@ class OpenAILLM(LLMInterface):
                 return response
             except asyncio.TimeoutError:
                 if attempt < retries:
-                    logger.warning(f"Timeout on attempt {attempt + 1}/{retries + 1}. Retrying...")
+                    logger.warning(f"Model '{self.model}' timeout on attempt {attempt + 1}/{retries + 1}. Retrying...")
                     await asyncio.sleep(retry_delay)
                 else:
-                    logger.error(f"All {retries + 1} attempts failed with timeout")
+                    logger.error(f"Model '{self.model}' - all {retries + 1} attempts failed with timeout")
                     raise
             except Exception as e:
                 if attempt < retries:
                     logger.warning(
-                        f"Error on attempt {attempt + 1}/{retries + 1}: {str(e)}. Retrying..."
+                        f"Model '{self.model}' error on attempt {attempt + 1}/{retries + 1}: {str(e)}. Retrying..."
                     )
                     await asyncio.sleep(retry_delay)
                 else:
-                    logger.error(f"All {retries + 1} attempts failed with error: {str(e)}")
+                    logger.error(f"Model '{self.model}' - all {retries + 1} attempts failed with error: {str(e)}")
                     raise
 
     async def _call_api(self, params: Dict[str, Any]) -> str:
