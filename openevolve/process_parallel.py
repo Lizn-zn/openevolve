@@ -348,12 +348,41 @@ class ProcessParallelController:
     def stop(self) -> None:
         """Stop the process pool"""
         self.shutdown_event.set()
-
-        if self.executor:
-            self.executor.shutdown(wait=True)
-            self.executor = None
-
+        
+        if not self.executor:
+            return
+        
+        # Force kill workers to prevent hanging from non-daemon threads
+        self._force_kill_workers()
+        
+        # Shutdown executor (workers already killed, no need to wait)
+        self.executor.shutdown(wait=False, cancel_futures=True)
+        self.executor = None
         logger.info("Stopped process pool")
+
+    def _force_kill_workers(self) -> None:
+        """Force terminate all worker processes"""
+        if not hasattr(self.executor, '_processes'):
+            return
+        
+        workers = list(self.executor._processes.values())
+        
+        for process in workers:
+            if process.is_alive():
+                try:
+                    process.terminate()  # Try SIGTERM first
+                except Exception as e:
+                    logger.warning(f"Failed to terminate worker process {process.pid}: {e}")
+        
+        time.sleep(0.3)  # Brief grace period
+        
+        for process in workers:
+            if process.is_alive():
+                try:
+                    process.kill()  # Force SIGKILL
+                    process.join(timeout=0.5)
+                except Exception as e:
+                    logger.warning(f"Failed to kill worker process {process.pid}: {e}")
 
     def request_shutdown(self) -> None:
         """Request graceful shutdown"""
