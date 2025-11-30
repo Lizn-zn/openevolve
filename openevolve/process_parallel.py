@@ -268,7 +268,7 @@ def _run_iteration_worker(
         )
 
     except Exception as e:
-        logger.exception(f"Error in worker iteration {iteration}")
+        logger.exception(f"Error in worker iteration {iteration}: {e}")
         return SerializableResult(error=str(e), iteration=iteration)
 
 
@@ -355,18 +355,23 @@ class ProcessParallelController:
         # Force kill workers to prevent hanging from non-daemon threads
         self._force_kill_workers()
         
-        # Shutdown executor (workers already killed, no need to wait)
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.executor = None
         logger.info("Stopped process pool")
 
     def _force_kill_workers(self) -> None:
         """Force terminate all worker processes"""
-        if not hasattr(self.executor, '_processes'):
+            
+        # Try to get worker processes from executor's internal state
+        workers = []
+        if hasattr(self.executor, '_processes'):
+            workers = list(self.executor._processes.values())
+        
+        if not workers:
+            logger.warning("No worker processes found to terminate")
             return
         
-        workers = list(self.executor._processes.values())
-        
+        # First try SIGTERM for graceful shutdown
         for process in workers:
             if process.is_alive():
                 try:
@@ -374,16 +379,19 @@ class ProcessParallelController:
                 except Exception as e:
                     logger.warning(f"Failed to terminate worker process {process.pid}: {e}")
         
-        time.sleep(0.3)  # Brief grace period
+        # Give processes time to shut down gracefully
+        time.sleep(0.5)
         
+        # Force kill any remaining processes
         for process in workers:
             if process.is_alive():
                 try:
                     process.kill()  # Force SIGKILL
-                    process.join(timeout=0.5)
+                    process.join(timeout=1.0)
                 except Exception as e:
                     logger.warning(f"Failed to kill worker process {process.pid}: {e}")
-
+        
+        
     def request_shutdown(self) -> None:
         """Request graceful shutdown"""
         logger.info("Graceful shutdown requested...")

@@ -372,6 +372,10 @@ class Config:
     early_stopping_patience: Optional[int] = None
     convergence_threshold: float = 0.001
     early_stopping_metric: str = "combined_score"
+    
+    # Re-evaluation settings
+    re_evaluate_on_load: bool = False  # Whether to re-evaluate programs when loading checkpoint
+    re_evaluate_best_only: bool = False  # If True, only re-evaluate best program; if False, re-evaluate all
 
     @classmethod
     def from_yaml(cls, path: Union[str, Path]) -> "Config":

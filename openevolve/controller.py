@@ -251,6 +251,21 @@ class OpenEvolve:
             self._load_checkpoint(checkpoint_path)
             start_iteration = self.database.last_iteration + 1
             logger.info(f"Resuming from checkpoint at iteration {start_iteration}")
+            
+            # Re-evaluate programs if configured
+            if self.config.re_evaluate_on_load:
+                if self.config.re_evaluate_best_only:
+                    # Only re-evaluate the best program
+                    logger.info("Re-evaluating best program with current evaluator...")
+                    best_id = self.database.best_program_id
+                    if best_id and best_id in self.database.programs:
+                        await self._reevaluate_programs([best_id])
+                    else:
+                        logger.warning("No best program found to re-evaluate")
+                else:
+                    # Re-evaluate all programs
+                    logger.info("Re-evaluating all programs with current evaluator...")
+                    await self._reevaluate_programs()
         else:
             start_iteration = self.database.last_iteration
 
@@ -493,6 +508,67 @@ class OpenEvolve:
             )
 
         logger.info(f"Saved checkpoint at iteration {iteration} to {checkpoint_path}")
+
+    async def _reevaluate_programs(self, program_ids: Optional[List[str]] = None) -> None:
+        """
+        Re-evaluate programs with current evaluator
+        
+        Args:
+            program_ids: List of program IDs to re-evaluate (None = all programs)
+        """
+        if program_ids is None:
+            program_ids = list(self.database.programs.keys())
+        
+        logger.info(f"Re-evaluating {len(program_ids)} programs with current evaluator...")
+        
+        updated_count = 0
+        failed_count = 0
+        
+        for i, program_id in enumerate(program_ids, 1):
+            if program_id not in self.database.programs:
+                logger.warning(f"Program {program_id} not found in database")
+                continue
+                
+            program = self.database.programs[program_id]
+            old_metrics = program.metrics.copy()
+            
+            try:
+                # Re-evaluate
+                new_metrics = await self.evaluator.evaluate_program(
+                    program.code,
+                    program_id=program_id
+                )
+                
+                # Update metrics
+                program.metrics = new_metrics
+                
+                # Log the change
+                if old_metrics and "combined_score" in old_metrics and "combined_score" in new_metrics:
+                    old_score = old_metrics["combined_score"]
+                    new_score = new_metrics["combined_score"]
+                    diff = new_score - old_score
+                    if abs(diff) > 0.0001:  # Only log if there's a meaningful change
+                        logger.info(
+                            f"[{i}/{len(program_ids)}] Program {program_id[:8]}... "
+                            f"score: {old_score:.4f} → {new_score:.4f} ({diff:+.4f})"
+                        )
+                else:
+                    logger.debug(f"[{i}/{len(program_ids)}] Re-evaluated program {program_id[:8]}...")
+                
+                updated_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to re-evaluate program {program_id}: {e}")
+                failed_count += 1
+        
+        logger.info(f"Re-evaluation complete: {updated_count} updated, {failed_count} failed")
+        
+        # Get pending artifacts and store them for each re-evaluated program
+        for program_id in program_ids:
+            if program_id in self.database.programs:
+                artifacts = self.evaluator.get_pending_artifacts(program_id)
+                if artifacts:
+                    self.database.store_artifacts(program_id, artifacts)
 
     def _load_checkpoint(self, checkpoint_path: str) -> None:
         """Load state from a checkpoint directory"""
