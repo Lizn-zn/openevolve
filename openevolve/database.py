@@ -991,36 +991,59 @@ class ProgramDatabase:
             existing_code=similar_program.code,
             proposed_code=program.code,
         )
-        
+
         try:
-            content: str = asyncio.run(
-                self.novelty_llm.generate_with_context(
-                    system_message=NOVELTY_SYSTEM_MSG,
-                    messages=[{"role": "user", "content": user_msg}],
+            # Check if we're already in an event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context, need to run in a new thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        self.novelty_llm.generate_with_context(
+                            system_message=NOVELTY_SYSTEM_MSG,
+                            messages=[{"role": "user", "content": user_msg}],
+                        )
+                    )
+                    content: str = future.result()
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run()
+                content: str = asyncio.run(
+                    self.novelty_llm.generate_with_context(
+                        system_message=NOVELTY_SYSTEM_MSG,
+                        messages=[{"role": "user", "content": user_msg}],
+                    )
                 )
-            )
 
             if not content:
                 logger.warning("Novelty LLM returned empty response")
                 return True
 
-            content_upper = content.strip().upper()
-            novel_idx = content_upper.find("NOVEL")
-            not_novel_idx = content_upper.find("NOT NOVEL")
-            
-            if novel_idx == -1 and not_novel_idx == -1:
+            content = content.strip()
+
+            # Parse the response
+            NOVEL_i = content.upper().find("NOVEL")
+            NOT_NOVEL_i = content.upper().find("NOT NOVEL")
+
+            if NOVEL_i == -1 and NOT_NOVEL_i == -1:
                 logger.warning(f"Unexpected novelty LLM response: {content}")
-                return True
-            
-            # 如果两个都找到，看哪个在前
-            if novel_idx != -1 and not_novel_idx != -1:
-                return novel_idx < not_novel_idx
-            
-            return novel_idx != -1
+                return True  # Assume novel if we can't parse
+
+            if NOVEL_i != -1 and NOT_NOVEL_i != -1:
+                # Both found, take the one that appears first
+                is_novel = NOVEL_i < NOT_NOVEL_i
+            elif NOVEL_i != -1:
+                is_novel = True
+            else:
+                is_novel = False
+
+            return is_novel
 
         except Exception as e:
             logger.error(f"Error in novelty LLM check: {e}")
-            return True
+
+        return True
     
     def _is_novel(self, program_id: int, island_idx: int) -> bool:
         """
