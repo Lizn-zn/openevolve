@@ -125,16 +125,12 @@ class OpenAILLM(LLMInterface):
 
         if is_reasoning_model:
             # For reasoning models (including Azure-deployed GPT-5), use max_completion_tokens
+            # Note: Azure reasoning models don't support custom temperature/top_p, only default values
             params = {
                 "model": actual_model_name,
                 "messages": formatted_messages,
                 "max_completion_tokens": kwargs.get("max_tokens", self.max_tokens),
             }
-            
-            # Azure-deployed reasoning models may support temperature and top_p
-            if is_azure_model:
-                params["temperature"] = kwargs.get("temperature", self.temperature)
-                params["top_p"] = kwargs.get("top_p", self.top_p)
             
             # Add optional reasoning parameters if provided
             reasoning_effort = kwargs.get("reasoning_effort", self.reasoning_effort)
