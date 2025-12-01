@@ -110,17 +110,32 @@ class OpenAILLM(LLMInterface):
         )
 
         # Check if this is an OpenAI reasoning model based on model name pattern
-        # This works for all endpoints (OpenAI, Azure, OptiLLM, OpenRouter, etc.)
+        # Remove "azure-" prefix from model name for actual API call if present
         model_lower = str(self.model).lower()
-        is_openai_reasoning_model = model_lower.startswith(OPENAI_REASONING_MODEL_PREFIXES) 
+        is_azure_model = model_lower.startswith("azure-")
+        
+        # Get actual model name (without azure- prefix if present)
+        actual_model_name = self.model
+        if is_azure_model:
+            actual_model_name = self.model.split("azure-", 1)[-1]
+        
+        # Check if the actual model name (after removing azure- prefix) is a reasoning model
+        actual_model_lower = actual_model_name.lower()
+        is_reasoning_model = actual_model_lower.startswith(OPENAI_REASONING_MODEL_PREFIXES)
 
-        if is_openai_reasoning_model:
-            # For OpenAI reasoning models
+        if is_reasoning_model:
+            # For reasoning models (including Azure-deployed GPT-5), use max_completion_tokens
             params = {
-                "model": self.model,
+                "model": actual_model_name,
                 "messages": formatted_messages,
                 "max_completion_tokens": kwargs.get("max_tokens", self.max_tokens),
             }
+            
+            # Azure-deployed reasoning models may support temperature and top_p
+            if is_azure_model:
+                params["temperature"] = kwargs.get("temperature", self.temperature)
+                params["top_p"] = kwargs.get("top_p", self.top_p)
+            
             # Add optional reasoning parameters if provided
             reasoning_effort = kwargs.get("reasoning_effort", self.reasoning_effort)
             if reasoning_effort is not None:
@@ -130,7 +145,7 @@ class OpenAILLM(LLMInterface):
         else:
             # Standard parameters for all other models
             params = {
-                "model": self.model,
+                "model": actual_model_name,
                 "messages": formatted_messages,
                 "temperature": kwargs.get("temperature", self.temperature),
                 "top_p": kwargs.get("top_p", self.top_p),
