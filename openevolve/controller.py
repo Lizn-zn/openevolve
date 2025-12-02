@@ -20,6 +20,7 @@ from openevolve.process_parallel import ProcessParallelController
 from openevolve.prompt.sampler import PromptSampler
 from openevolve.utils.code_utils import extract_code_language
 from openevolve.utils.format_utils import format_improvement_safe, format_metrics_safe
+from openevolve.utils.metrics_utils import get_fitness_score
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +321,47 @@ class OpenEvolve:
 
             # Set up signal handlers for graceful shutdown
             def signal_handler(signum, frame):
+                import subprocess
+                import traceback
+                from datetime import datetime
+                
                 logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+                
+                # 详细记录进程信息
+                logger.info(f"=== 信号详情 ===")
+                logger.info(f"进程 PID: {os.getpid()}")
+                logger.info(f"父进程 PPID: {os.getppid()}")
+                logger.info(f"进程组 PGID: {os.getpgrp()}")
+                logger.info(f"会话 SID: {os.getsid(0)}")
+                logger.info(f"信号时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                
+                # 尝试获取父进程信息
+                try:
+                    parent_info = subprocess.check_output(
+                        f"ps -o pid,ppid,pgid,sid,cmd -p {os.getppid()} --no-headers", 
+                        shell=True, text=True, timeout=2
+                    ).strip()
+                    logger.info(f"父进程信息: {parent_info}")
+                except Exception as e:
+                    logger.warning(f"无法获取父进程信息: {e}")
+                
+                # 记录进程树
+                try:
+                    process_tree = subprocess.check_output(
+                        f"pstree -p -s {os.getpid()}", 
+                        shell=True, text=True, timeout=2
+                    ).strip()
+                    logger.info(f"进程树:\n{process_tree}")
+                except Exception as e:
+                    logger.warning(f"无法获取进程树: {e}")
+                
+                # 记录栈追踪
+                logger.info("信号接收时的栈追踪:")
+                for line in traceback.format_stack():
+                    logger.info(line.strip())
+                
+                logger.info(f"=== 信号详情结束 ===")
+                
                 if self.parallel_controller:
                     self.parallel_controller.request_shutdown()
 
@@ -534,6 +575,15 @@ class OpenEvolve:
                 # Update metrics
                 program.metrics = new_metrics
                 
+                # Update best program tracking after re-evaluation
+                # Update global best program
+                self.database._update_best_program(program)
+                
+                # Update island best program if program has island metadata
+                if "island" in program.metadata:
+                    island_idx = program.metadata["island"]
+                    self.database._update_island_best_program(program, island_idx)
+                
                 # Log the change
                 if old_metrics and "combined_score" in old_metrics and "combined_score" in new_metrics:
                     old_score = old_metrics["combined_score"]
@@ -554,6 +604,24 @@ class OpenEvolve:
                 failed_count += 1
         
         logger.info(f"Re-evaluation complete: {updated_count} updated, {failed_count} failed")
+        
+        # Recalculate all island best programs after re-evaluation
+        # This ensures island best programs are updated correctly after scores change
+        self.database.recalculate_all_island_best_programs()
+        
+        # Recalculate global best program
+        if self.database.programs:
+            all_programs = list(self.database.programs.values())
+            best_program = max(
+                all_programs,
+                key=lambda p: get_fitness_score(p.metrics, self.database.config.feature_dimensions),
+            )
+            old_best_id = self.database.best_program_id
+            self.database.best_program_id = best_program.id
+            if old_best_id != best_program.id:
+                logger.info(
+                    f"Global best program updated after re-evaluation: {old_best_id} → {best_program.id}"
+                )
         
         # Get pending artifacts and store them for each re-evaluated program
         for program_id in program_ids:

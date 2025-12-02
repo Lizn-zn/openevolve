@@ -1953,6 +1953,37 @@ class ProgramDatabase:
                         self.island_best_programs[i] = best_program.id
                         logger.debug(f"Recalculated island {i} best program: {best_program.id}")
 
+    def recalculate_all_island_best_programs(self) -> None:
+        """
+        Recalculate best program for all islands.
+        Useful after re-evaluation when scores may have changed.
+        """
+        for i, island in enumerate(self.islands):
+            if len(island) == 0:
+                self.island_best_programs[i] = None
+                continue
+            
+            # Get all programs in this island
+            island_programs = [
+                self.programs[pid] for pid in island if pid in self.programs
+            ]
+            
+            if island_programs:
+                # Find the best program by fitness score
+                best_program = max(
+                    island_programs,
+                    key=lambda p: get_fitness_score(p.metrics, self.config.feature_dimensions),
+                )
+                old_best_id = self.island_best_programs[i]
+                self.island_best_programs[i] = best_program.id
+                
+                if old_best_id != best_program.id:
+                    logger.info(
+                        f"Island {i}: Recalculated best program {old_best_id} → {best_program.id}"
+                    )
+            else:
+                self.island_best_programs[i] = None
+
     def get_island_stats(self) -> List[dict]:
         """Get statistics for each island"""
         stats = []
