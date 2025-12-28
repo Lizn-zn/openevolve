@@ -539,6 +539,29 @@ class ProcessParallelController:
                     # Store artifacts
                     if result.artifacts:
                         self.database.store_artifacts(child_program.id, result.artifacts)
+                        
+                        # Re-trigger classification if rule partition is enabled
+                        # (artifacts are now available, program was already added to database)
+                        # _classify_and_add_to_region will handle the classification
+                        if self.database.rule_partition is not None:
+                            try:
+                                # Re-trigger classification (will skip if already classified)
+                                self.database._classify_and_add_to_region(child_program)
+                                
+                                # Update MCTS if enabled and program was classified
+                                if (self.config.mcts.enabled and 
+                                    self.config.mcts.use_rule_partition and 
+                                    self.database.mcts_explorer is not None):
+                                    region_id = child_program.metadata.get("rule_region")
+                                    if region_id:
+                                        from openevolve.utils.metrics_utils import get_fitness_score
+                                        fitness = get_fitness_score(
+                                            child_program.metrics,
+                                            self.database.config.feature_dimensions
+                                        )
+                                        self.database.mcts_explorer.update(region_id, reward=fitness)
+                            except Exception as e:
+                                logger.debug(f"Failed to classify program {child_program.id} for rule partition: {e}")
 
                     # Log evolution trace
                     if self.evolution_tracer:
@@ -765,9 +788,27 @@ class ProcessParallelController:
 
             # Use thread-safe sampling that doesn't modify shared state
             # This fixes the race condition from GitHub issue #246
-            parent, inspirations = self.database.sample_from_island(
-                island_id=target_island, num_inspirations=self.config.prompt.num_top_programs
-            )
+            # Support MCTS if enabled
+            use_mcts = False
+            if (self.config.mcts.enabled and 
+                self.config.mcts.use_rule_partition and 
+                self.database.mcts_explorer is not None and 
+                self.database.rule_partition is not None):
+                import random
+                use_mcts = random.random() < self.config.mcts.sampling_ratio
+            
+            if use_mcts:
+                # Use MCTS sampling
+                parent, inspirations = self.database.sample(
+                    num_inspirations=self.config.prompt.num_top_programs,
+                    use_mcts=True,
+                    mcts_simulations=self.config.mcts.simulations_per_iteration
+                )
+            else:
+                # Use original island-based sampling
+                parent, inspirations = self.database.sample_from_island(
+                    island_id=target_island, num_inspirations=self.config.prompt.num_top_programs
+                )
 
             # Create database snapshot
             db_snapshot = self._create_database_snapshot()

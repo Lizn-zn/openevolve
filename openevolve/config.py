@@ -350,6 +350,27 @@ class EvolutionTraceConfig:
 
 
 @dataclass
+class RulePartitionConfig:
+    """Configuration for rule-based space partitioning"""
+
+    enabled: bool = False
+    rule_program_path: Optional[str] = None
+    use_with_map_elites: bool = False  # Whether to use with MAP-Elites (parallel)
+
+
+@dataclass
+class MCTSConfig:
+    """Configuration for Monte Carlo Tree Search exploration"""
+
+    enabled: bool = False
+    exploration_constant: float = 1.414  # sqrt(2), UCB1 exploration constant
+    simulations_per_iteration: int = 10  # Number of MCTS simulations per iteration
+    reward_function: str = "best_fitness"  # Options: "best_fitness", "average_fitness", "max_improvement"
+    use_rule_partition: bool = True  # Must be used with rule_partition.enabled=true
+    sampling_ratio: float = 0.7  # Ratio of MCTS sampling (remaining uses original strategy)
+
+
+@dataclass
 class Config:
     """Master configuration for OpenEvolve"""
 
@@ -368,6 +389,8 @@ class Config:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     evaluator: EvaluatorConfig = field(default_factory=EvaluatorConfig)
     evolution_trace: EvolutionTraceConfig = field(default_factory=EvolutionTraceConfig)
+    rule_partition: RulePartitionConfig = field(default_factory=RulePartitionConfig)
+    mcts: MCTSConfig = field(default_factory=MCTSConfig)
 
     # Evolution settings
     diff_based_evolution: bool = True
@@ -400,7 +423,7 @@ class Config:
 
         # Update top-level fields
         for key, value in config_dict.items():
-            if key not in ["llm", "prompt", "database", "evaluator", "evolution_trace"] and hasattr(
+            if key not in ["llm", "prompt", "database", "evaluator", "evolution_trace", "rule_partition", "mcts"] and hasattr(
                 config, key
             ):
                 setattr(config, key, value)
@@ -427,6 +450,10 @@ class Config:
             config.evaluator = EvaluatorConfig(**config_dict["evaluator"])
         if "evolution_trace" in config_dict:
             config.evolution_trace = EvolutionTraceConfig(**config_dict["evolution_trace"])
+        if "rule_partition" in config_dict:
+            config.rule_partition = RulePartitionConfig(**config_dict["rule_partition"])
+        if "mcts" in config_dict:
+            config.mcts = MCTSConfig(**config_dict["mcts"])
 
         return config
 

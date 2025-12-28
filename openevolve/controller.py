@@ -148,7 +148,47 @@ class OpenEvolve:
         self.config.database.novelty_llm = self.llm_ensemble
         # Pass LLM config to database so embedding client can use Azure settings
         self.config.database.llm_config = self.config.llm
-        self.database = ProgramDatabase(self.config.database)
+        
+        # Initialize rule partition and MCTS if enabled
+        rule_partition = None
+        mcts_explorer = None
+        
+        if self.config.rule_partition.enabled:
+            from openevolve.rule_program import RuleProgram
+            from openevolve.rule_partition import RulePartition
+            
+            if self.config.rule_partition.rule_program_path:
+                try:
+                    rule_program = RuleProgram(self.config.rule_partition.rule_program_path)
+                    rule_partition = RulePartition(rule_program)
+                    logger.info(f"Initialized rule partition with {self.config.rule_partition.rule_program_path}")
+                except Exception as e:
+                    logger.error(f"Failed to initialize rule partition: {e}")
+                    logger.warning("Continuing without rule partition")
+            else:
+                logger.warning("Rule partition enabled but no rule_program_path specified")
+        
+        if self.config.mcts.enabled:
+            from openevolve.mcts_explorer import MCTSExplorer
+            
+            if self.config.mcts.use_rule_partition and rule_partition is None:
+                logger.warning("MCTS requires rule partition but it's not initialized. Disabling MCTS.")
+            else:
+                try:
+                    mcts_explorer = MCTSExplorer(
+                        exploration_constant=self.config.mcts.exploration_constant,
+                        reward_function=self.config.mcts.reward_function
+                    )
+                    logger.info(f"Initialized MCTS explorer (C={self.config.mcts.exploration_constant})")
+                except Exception as e:
+                    logger.error(f"Failed to initialize MCTS explorer: {e}")
+                    logger.warning("Continuing without MCTS")
+        
+        self.database = ProgramDatabase(
+            self.config.database,
+            rule_partition=rule_partition,
+            mcts_explorer=mcts_explorer
+        )
 
         self.evaluator = Evaluator(
             self.config.evaluator,

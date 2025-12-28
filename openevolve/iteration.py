@@ -48,7 +48,20 @@ async def run_iteration_with_shared_db(
 
     try:
         # Sample parent and inspirations from database
-        parent, inspirations = database.sample(num_inspirations=config.prompt.num_top_programs)
+        # Use MCTS if enabled (with sampling_ratio probability)
+        use_mcts = False
+        if (config.mcts.enabled and 
+            config.mcts.use_rule_partition and 
+            database.mcts_explorer is not None and 
+            database.rule_partition is not None):
+            import random
+            use_mcts = random.random() < config.mcts.sampling_ratio
+        
+        parent, inspirations = database.sample(
+            num_inspirations=config.prompt.num_top_programs,
+            use_mcts=use_mcts,
+            mcts_simulations=config.mcts.simulations_per_iteration if config.mcts.enabled else 10
+        )
 
         # Get artifacts for the parent program if available
         parent_artifacts = database.get_artifacts(parent.id)
@@ -151,6 +164,28 @@ async def run_iteration_with_shared_db(
         result.artifacts = artifacts
         result.iteration_time = time.time() - iteration_start
         result.iteration = iteration
+
+        # Classify program and update MCTS if rule partition is enabled
+        # (artifacts are now available, but program hasn't been added to database yet)
+        # Classification will happen when program is added to database via _classify_and_add_to_region
+        # But we can pre-classify here to avoid duplicate work
+        if (database.rule_partition is not None and artifacts and 
+            "rule_region" not in result.child_program.metadata):
+            try:
+                from openevolve.utils.metrics_utils import get_fitness_score
+                # Get search output from artifacts
+                search_output = None
+                if "p" in artifacts and "elements" in artifacts:
+                    search_output = (artifacts["p"], artifacts["elements"])
+                elif "search_output" in artifacts:
+                    search_output = artifacts["search_output"]
+                
+                if search_output:
+                    # Pre-classify (will be added to region when program is added to database)
+                    region_id = database.rule_partition.classify(search_output)
+                    result.child_program.metadata["rule_region"] = region_id
+            except Exception as e:
+                logger.debug(f"Failed to pre-classify program {child_id}: {e}")
 
         return result
 

@@ -23,6 +23,16 @@ from openevolve.utils.metrics_utils import safe_numeric_average, get_fitness_sco
 
 logger = logging.getLogger(__name__)
 
+# Optional imports for rule partitioning and MCTS
+try:
+    from openevolve.rule_partition import RulePartition
+    from openevolve.mcts_explorer import MCTSExplorer
+    RULE_PARTITION_AVAILABLE = True
+except ImportError:
+    RULE_PARTITION_AVAILABLE = False
+    RulePartition = None
+    MCTSExplorer = None
+
 
 def _safe_sum_metrics(metrics: Dict[str, Any]) -> float:
     """Safely sum only numeric metric values, ignoring strings and other types"""
@@ -105,11 +115,20 @@ class ProgramDatabase:
     It also tracks the absolute best program separately to ensure it's never lost.
     """
 
-    def __init__(self, config: DatabaseConfig):
+    def __init__(
+        self,
+        config: DatabaseConfig,
+        rule_partition: Optional["RulePartition"] = None,
+        mcts_explorer: Optional["MCTSExplorer"] = None,
+    ):
         self.config = config
 
         # In-memory program storage
         self.programs: Dict[str, Program] = {}
+
+        # Rule-based partitioning and MCTS (optional)
+        self.rule_partition: Optional["RulePartition"] = rule_partition
+        self.mcts_explorer: Optional["MCTSExplorer"] = mcts_explorer
 
         # Per-island feature grids for MAP-Elites
         self.island_feature_maps: List[Dict[str, str]] = [
@@ -343,6 +362,10 @@ class ProgramDatabase:
         # Update island-specific best program tracking
         self._update_island_best_program(program, island_idx)
 
+        # Rule-based partitioning: classify program and add to region
+        if self.rule_partition is not None:
+            self._classify_and_add_to_region(program)
+
         # Save to disk if configured
         if self.config.db_path:
             self._save_program(program)
@@ -363,18 +386,24 @@ class ProgramDatabase:
         """
         return self.programs.get(program_id)
 
-    def sample(self, num_inspirations: Optional[int] = None) -> Tuple[Program, List[Program]]:
+    def sample(self, num_inspirations: Optional[int] = None, use_mcts: bool = False, mcts_simulations: int = 10) -> Tuple[Program, List[Program]]:
         """
         Sample a program and inspirations for the next evolution step
 
         Args:
             num_inspirations: Number of inspiration programs to sample (defaults to 5 for backward compatibility)
+            use_mcts: If True and MCTS is enabled, use MCTS to select region first
+            mcts_simulations: Number of MCTS simulations to run (if use_mcts is True)
 
         Returns:
             Tuple of (parent_program, inspiration_programs)
         """
-        # Select parent program
-        parent = self._sample_parent()
+        # Use MCTS if enabled and requested
+        if use_mcts and self.mcts_explorer is not None and self.rule_partition is not None:
+            parent = self._sample_with_mcts(simulations=mcts_simulations)
+        else:
+            # Select parent program using original strategy
+            parent = self._sample_parent()
 
         # Select inspirations
         if num_inspirations is None:
@@ -1409,6 +1438,119 @@ class ProgramDatabase:
         # Sample randomly from all programs
         program_id = random.choice(list(self.programs.keys()))
         return self.programs[program_id]
+
+    def _classify_and_add_to_region(self, program: Program) -> None:
+        """
+        Classify program using rule partition and add to region.
+        
+        This method is called when a program is added. If artifacts are not yet available,
+        classification will be skipped. Classification should be done later when artifacts
+        are stored (in iteration.py or process_parallel.py).
+        
+        Args:
+            program: Program to classify
+        """
+        if self.rule_partition is None:
+            return
+
+        # Skip if already classified (to avoid duplicate classification)
+        if "rule_region" in program.metadata:
+            return
+
+        try:
+            # Get search output from artifacts
+            artifacts = self.get_artifacts(program.id)
+            if not artifacts:
+                logger.debug(f"No artifacts found for program {program.id}, skipping rule classification (will be classified when artifacts are stored)")
+                return
+
+            # Extract search output from artifacts
+            # For erdos_475, artifacts contain "p" and "elements"
+            search_output = None
+            if "p" in artifacts and "elements" in artifacts:
+                search_output = (artifacts["p"], artifacts["elements"])
+            elif "search_output" in artifacts:
+                search_output = artifacts["search_output"]
+            else:
+                logger.debug(f"Could not extract search output from artifacts for program {program.id}")
+                return
+
+            # Classify using rule partition
+            region_id = self.rule_partition.classify(search_output)
+
+            # Get fitness score
+            fitness = get_fitness_score(program.metrics, self.config.feature_dimensions)
+
+            # Add program to region (will skip if already added)
+            self.rule_partition.add_program(region_id, program.id, fitness)
+
+            # Store region_id in program metadata
+            program.metadata["rule_region"] = region_id
+
+            logger.debug(f"Classified program {program.id} to region {region_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to classify program {program.id}: {e}")
+
+    def _sample_with_mcts(self, simulations: int = 10) -> Program:
+        """
+        Sample a parent program using MCTS to select region first.
+        
+        Args:
+            simulations: Number of MCTS simulations to run
+            
+        Returns:
+            Parent program from MCTS-selected region
+        """
+        if self.mcts_explorer is None or self.rule_partition is None:
+            # Fallback to original sampling
+            return self._sample_parent()
+
+        try:
+            # Select region using MCTS
+            region_id = self.mcts_explorer.select_region(
+                self.rule_partition,
+                simulations=simulations
+            )
+
+            # Sample from selected region
+            return self.sample_from_region(region_id)
+
+        except Exception as e:
+            logger.warning(f"MCTS sampling failed: {e}, falling back to original sampling")
+            return self._sample_parent()
+
+    def sample_from_region(self, region_id: Tuple[bool, ...]) -> Program:
+        """
+        Sample a program from a specific region.
+        
+        Args:
+            region_id: Region identifier (tuple[bool, ...])
+            
+        Returns:
+            Program from the region
+        """
+        if self.rule_partition is None:
+            raise ValueError("Rule partition not initialized")
+
+        # Get programs in the region
+        region_programs = self.rule_partition.get_region_programs(region_id)
+
+        if not region_programs:
+            # No programs in region, fallback to original sampling
+            logger.debug(f"No programs in region {region_id}, using original sampling")
+            return self._sample_parent()
+
+        # Filter to only valid programs
+        valid_programs = [pid for pid in region_programs if pid in self.programs]
+
+        if not valid_programs:
+            logger.debug(f"No valid programs in region {region_id}, using original sampling")
+            return self._sample_parent()
+
+        # Sample randomly from region
+        parent_id = random.choice(valid_programs)
+        return self.programs[parent_id]
 
     def _sample_from_island_weighted(self, island_id: int) -> Program:
         """
