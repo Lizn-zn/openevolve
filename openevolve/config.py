@@ -3,14 +3,48 @@ Configuration handling for OpenEvolve
 """
 
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
+import dacite
 import yaml
 
 if TYPE_CHECKING:
     from openevolve.llm.base import LLMInterface
+
+
+_ENV_VAR_PATTERN = re.compile(r"^\$\{([^}]+)\}$")  # ${VAR}
+
+
+def _resolve_env_var(value: Optional[str]) -> Optional[str]:
+    """
+    Resolve ${VAR} environment variable reference in a string value.
+    In current implementation pattern must match the entire string (e.g., "${OPENAI_API_KEY}"),
+    not embedded within other text.
+
+    Args:
+        value: The string value that may contain ${VAR} syntax
+
+    Returns:
+        The resolved value with environment variable expanded, or original value if no match
+
+    Raises:
+        ValueError: If the environment variable is referenced but not set
+    """
+    if value is None:
+        return None
+
+    match = _ENV_VAR_PATTERN.match(value)
+    if not match:
+        return value
+
+    var_name = match.group(1)
+    env_value = os.environ.get(var_name)
+    if env_value is None:
+        raise ValueError(f"Environment variable {var_name} is not set")
+    return env_value
 
 
 @dataclass
@@ -50,6 +84,10 @@ class LLMModelConfig:
     managed_identity_client_id: Optional[str] = None
     api_version: Optional[str] = None
 
+    def __post_init__(self):
+        """Post-initialization to resolve ${VAR} env var references in api_key"""
+        self.api_key = _resolve_env_var(self.api_key)
+
 
 @dataclass
 class LLMConfig(LLMModelConfig):
@@ -86,6 +124,8 @@ class LLMConfig(LLMModelConfig):
 
     def __post_init__(self):
         """Post-initialization to set up model configurations"""
+        super().__post_init__()  # Resolve ${VAR} in api_key at LLMConfig level
+
         # Handle backward compatibility for primary_model(_weight) and secondary_model(_weight).
         if self.primary_model:
             # Create primary model
@@ -260,7 +300,6 @@ class DatabaseConfig:
     population_size: int = 1000
     archive_size: int = 100
     num_islands: int = 5
-    programs_per_island: Optional[int] = None
 
     # Selection parameters
     elite_selection_ratio: float = 0.1
@@ -395,6 +434,7 @@ class Config:
     # Evolution settings
     diff_based_evolution: bool = True
     max_code_length: int = 10000
+    diff_pattern: str = r"<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE"
 
     # Early stopping settings
     early_stopping_patience: Optional[int] = None
@@ -417,43 +457,20 @@ class Config:
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "Config":
-        """Create configuration from a dictionary"""
-        # Handle nested configurations
-        config = Config()
+        if "diff_pattern" in config_dict:
+            try:
+                re.compile(config_dict["diff_pattern"])
+            except re.error as e:
+                raise ValueError(f"Invalid regex pattern in diff_pattern: {e}")
 
-        # Update top-level fields
-        for key, value in config_dict.items():
-            if key not in ["llm", "prompt", "database", "evaluator", "evolution_trace", "rule_partition", "mcts"] and hasattr(
-                config, key
-            ):
-                setattr(config, key, value)
+        config: Config = dacite.from_dict(
+            data_class=cls,
+            data=config_dict,
+            config=dacite.Config(cast=[List, Union], forward_references={"LLMInterface": Any}),
+        )
 
-        # Update nested configs
-        if "llm" in config_dict:
-            llm_dict = config_dict["llm"]
-            if "models" in llm_dict:
-                llm_dict["models"] = [LLMModelConfig(**m) for m in llm_dict["models"]]
-            if "evaluator_models" in llm_dict:
-                llm_dict["evaluator_models"] = [
-                    LLMModelConfig(**m) for m in llm_dict["evaluator_models"]
-                ]
-            config.llm = LLMConfig(**llm_dict)
-        if "prompt" in config_dict:
-            config.prompt = PromptConfig(**config_dict["prompt"])
-        if "database" in config_dict:
-            config.database = DatabaseConfig(**config_dict["database"])
-
-        # Ensure database inherits the random seed if not explicitly set
         if config.database.random_seed is None and config.random_seed is not None:
             config.database.random_seed = config.random_seed
-        if "evaluator" in config_dict:
-            config.evaluator = EvaluatorConfig(**config_dict["evaluator"])
-        if "evolution_trace" in config_dict:
-            config.evolution_trace = EvolutionTraceConfig(**config_dict["evolution_trace"])
-        if "rule_partition" in config_dict:
-            config.rule_partition = RulePartitionConfig(**config_dict["rule_partition"])
-        if "mcts" in config_dict:
-            config.mcts = MCTSConfig(**config_dict["mcts"])
 
         return config
 

@@ -204,13 +204,13 @@ def _run_iteration_worker(
         if _worker_config.diff_based_evolution:
             from openevolve.utils.code_utils import apply_diff, extract_diffs, format_diff_summary
 
-            diff_blocks = extract_diffs(llm_response)
+            diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
             if not diff_blocks:
                 return SerializableResult(
                     error=f"No valid diffs found in response", iteration=iteration
                 )
 
-            child_code = apply_diff(parent.code, llm_response)
+            child_code = apply_diff(parent.code, llm_response, _worker_config.diff_pattern)
             changes_summary = format_diff_summary(diff_blocks)
         else:
             from openevolve.utils.code_utils import parse_full_rewrite
@@ -482,12 +482,6 @@ class ProcessParallelController:
         next_iteration = current_iteration
         completed_iterations = 0
 
-        # Island management
-        programs_per_island = self.config.database.programs_per_island or max(
-            1, max_iterations // (self.config.database.num_islands * 10)
-        )
-        current_island_counter = 0
-
         # Early stopping tracking
         early_stopping_enabled = self.config.early_stopping_patience is not None
         if early_stopping_enabled:
@@ -603,16 +597,12 @@ class ProcessParallelController:
                         )
 
                     # Island management
-                    if (
-                        completed_iteration > start_iteration
-                        and current_island_counter >= programs_per_island
-                    ):
-                        self.database.next_island()
-                        current_island_counter = 0
-                        logger.debug(f"Switched to island {self.database.current_island}")
-
-                    current_island_counter += 1
-                    self.database.increment_island_generation()
+                    # get current program island id
+                    island_id = child_program.metadata.get(
+                        "island", self.database.current_island
+                    )
+                    #use this to increment island generation
+                    self.database.increment_island_generation(island_idx=island_id)
 
                     # Check migration
                     if self.database.should_migrate():

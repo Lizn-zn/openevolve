@@ -66,7 +66,10 @@ def get_client_model(model_name: str, llm_config=None) -> Tuple[Union[openai.Ope
         Tuple of (client, model_to_use)
     """
     if model_name in OPENAI_EMBEDDING_MODELS:
-        client = openai.OpenAI()
+        # Use OPENAI_EMBEDDING_API_KEY if set, otherwise fall back to OPENAI_API_KEY
+        # This allows users to use OpenRouter for LLMs while using OpenAI for embeddings
+        embedding_api_key = os.getenv("OPENAI_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
+        client = openai.OpenAI(api_key=embedding_api_key)
         model_to_use = model_name
     elif model_name in AZURE_EMBEDDING_MODELS:
         # Get rid of the azure- prefix
@@ -139,9 +142,7 @@ class EmbeddingClient:
         self.model_name = model_name
         self.verbose = verbose
 
-    def get_embedding(
-        self, code: Union[str, List[str]]
-    ) -> Union[List[float], List[List[float]]]:
+    def get_embedding(self, code: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
         """
         Computes the text embedding for a code string.
 
