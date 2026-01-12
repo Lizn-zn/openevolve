@@ -16,6 +16,7 @@ from openevolve.utils.code_utils import (
     format_diff_summary,
     parse_evolve_blocks,
     parse_full_rewrite,
+    validate_changes_within_evolve_block,
 )
 from openevolve.utils.format_utils import (
     format_metrics_safe,
@@ -38,6 +39,7 @@ __all__ = [
     "format_diff_summary",
     "parse_evolve_blocks",
     "parse_full_rewrite",
+    "validate_changes_within_evolve_block",
     "format_metrics_safe",
     "format_improvement_safe",
     "safe_numeric_average",

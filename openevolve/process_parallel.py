@@ -224,6 +224,15 @@ def _run_iteration_worker(
             child_code = new_code
             changes_summary = "Full rewrite"
 
+        # Validate that changes are within EVOLVE-BLOCK
+        from openevolve.utils.code_utils import validate_changes_within_evolve_block
+        is_valid, error_msg = validate_changes_within_evolve_block(parent.code, child_code)
+        if not is_valid:
+            return SerializableResult(
+                error=error_msg,
+                iteration=iteration,
+            )
+
         # Check code length
         if len(child_code) > _worker_config.max_code_length:
             return SerializableResult(

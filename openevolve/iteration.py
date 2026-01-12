@@ -15,6 +15,7 @@ from openevolve.utils.code_utils import (
     extract_diffs,
     format_diff_summary,
     parse_full_rewrite,
+    validate_changes_within_evolve_block,
 )
 
 
@@ -116,6 +117,12 @@ async def run_iteration_with_shared_db(
 
             child_code = new_code
             changes_summary = "Full rewrite"
+
+        # Validate that changes are within EVOLVE-BLOCK
+        is_valid, error_msg = validate_changes_within_evolve_block(parent.code, child_code)
+        if not is_valid:
+            logger.warning(f"Iteration {iteration+1}: {error_msg}")
+            return None
 
         # Check code length
         if len(child_code) > config.max_code_length:
