@@ -646,8 +646,8 @@ class ProgramDatabase:
             "feature_stats": self._serialize_feature_stats(),
         }
 
-        with open(os.path.join(save_path, "metadata.json"), "w") as f:
-            json.dump(metadata, f)
+        with open(os.path.join(save_path, "metadata.json"), "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         logger.info(f"Saved database with {len(self.programs)} programs to {save_path}")
 
@@ -843,8 +843,8 @@ class ProgramDatabase:
             program_dict["prompts"] = prompts
         program_path = os.path.join(programs_dir, f"{program.id}.json")
 
-        with open(program_path, "w") as f:
-            json.dump(program_dict, f)
+        with open(program_path, "w", encoding="utf-8") as f:
+            json.dump(program_dict, f, indent=2, ensure_ascii=False)
 
     def _calculate_feature_coords(self, program: Program) -> List[int]:
         """

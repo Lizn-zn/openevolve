@@ -14,6 +14,7 @@ from openevolve.utils.metrics_utils import (
     get_fitness_score,
     format_feature_coordinates,
 )
+from openevolve.utils.code_utils import parse_evolve_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +310,10 @@ class PromptSampler:
         selected_top = top_programs[: min(self.config.num_top_programs, len(top_programs))]
 
         for i, program in enumerate(selected_top):
-            # Use the full program code
-            program_code = program.get("code", "")
+            # Extract only EVOLVE-BLOCK to reduce prompt size
+            full_code = program.get("code", "")
+            blocks = parse_evolve_blocks(full_code)
+            program_code = blocks[0][2] if blocks else full_code  # blocks[0][2] is block_content
 
             # Calculate fitness score (prefers combined_score, excludes feature dimensions)
             score = get_fitness_score(program.get("metrics", {}), feature_dimensions or [])
@@ -359,8 +362,10 @@ class PromptSampler:
                 diverse_programs_str += "\n\n## " + self.template_manager.get_fragment("diverse_programs_title") + "\n\n"
 
                 for i, program in enumerate(diverse_programs):
-                    # Use the full program code
-                    program_code = program.get("code", "")
+                    # Extract only EVOLVE-BLOCK to reduce prompt size
+                    full_code = program.get("code", "")
+                    blocks = parse_evolve_blocks(full_code)
+                    program_code = blocks[0][2] if blocks else full_code
 
                     # Calculate fitness score (prefers combined_score, excludes feature dimensions)
                     score = get_fitness_score(program.get("metrics", {}), feature_dimensions or [])
@@ -429,8 +434,10 @@ class PromptSampler:
         inspiration_programs_str = ""
 
         for i, program in enumerate(inspirations):
-            # Use the full program code
-            program_code = program.get("code", "")
+            # Extract only EVOLVE-BLOCK to reduce prompt size
+            full_code = program.get("code", "")
+            blocks = parse_evolve_blocks(full_code)
+            program_code = blocks[0][2] if blocks else full_code
 
             # Calculate fitness score (prefers combined_score, excludes feature dimensions)
             score = get_fitness_score(program.get("metrics", {}), feature_dimensions or [])
@@ -510,16 +517,17 @@ class PromptSampler:
                 and self.config.include_changes_under_chars
                 and len(changes) < self.config.include_changes_under_chars
             ):
-                features.append(self.template_manager.get_fragment("inspiration_changes_prefix").format(changes=changes))
+                prefix = self.template_manager.get_fragment("inspiration_changes_prefix")
+                features.append(f"{prefix} {changes}")
 
         # Analyze metrics for standout characteristics
         metrics = program.get("metrics", {})
         for metric_name, value in metrics.items():
             if isinstance(value, (int, float)):
                 if value >= 0.9:
-                    features.append(f"{self.template_manager.get_fragment('inspiration_metrics_excellent').format(metric_name=metric_name, value=value)}")
+                    features.append(self.template_manager.get_fragment('inspiration_metrics_excellent', metric_name=metric_name, value=value))
                 elif value <= 0.3:
-                    features.append(f"{self.template_manager.get_fragment('inspiration_metrics_alternative').format(metric_name=metric_name)}")
+                    features.append(self.template_manager.get_fragment('inspiration_metrics_alternative', metric_name=metric_name))
 
         # Code-based features (simple heuristics)
         code = program.get("code", "")
@@ -558,8 +566,12 @@ class PromptSampler:
         # Apply variations defined in the config
         for key, variations in self.config.template_variations.items():
             if variations and f"{{{key}}}" in result:
-                chosen_variation = random.choice(variations)
+                chosen_idx = random.randrange(len(variations))
+                chosen_variation = variations[chosen_idx]
                 result = result.replace(f"{{{key}}}", chosen_variation)
+                # Log which variation was chosen (extract first line as identifier)
+                first_line = chosen_variation.strip().split('\n')[0][:60]
+                logger.debug(f"Template variation '{key}': chose #{chosen_idx + 1}/{len(variations)} - {first_line}")
 
         return result
 
