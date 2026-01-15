@@ -46,9 +46,15 @@ def apply_diff(
     original_code: str,
     diff_text: str,
     diff_pattern: str = r"<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE",
-) -> str:
+) -> Tuple[str, bool, List[dict]]:
     """
-    Apply a diff to the original code
+    Apply a diff to the original code with robust matching and status reporting.
+    
+    Matching strategies (tried in order):
+    1. Exact match
+    2. Trailing whitespace stripped
+    3. All whitespace normalized (multiple spaces -> single space)
+    4. Fuzzy match with first+last lines anchor
 
     Args:
         original_code: Original source code
@@ -56,28 +62,187 @@ def apply_diff(
         diff_pattern: Regex pattern for the SEARCH/REPLACE format
 
     Returns:
-        Modified code
+        Tuple of (modified_code, all_applied, block_results)
+        - modified_code: The resulting code after applying diffs
+        - all_applied: True if all diff blocks were successfully applied
+        - block_results: List of dicts with details for each block:
+            - applied: bool
+            - match_strategy: str (how it was matched)
+            - search_preview: str (first line of search)
+            - match_line: int or None (line number where matched)
     """
-    # Split into lines for easier processing
-    original_lines = original_code.split("\n")
-    result_lines = original_lines.copy()
-
-    # Extract diff blocks
+    result_lines = original_code.split("\n")
     diff_blocks = extract_diffs(diff_text, diff_pattern)
+    
+    block_results = []
 
-    # Apply each diff block
     for search_text, replace_text in diff_blocks:
         search_lines = search_text.split("\n")
         replace_lines = replace_text.split("\n")
+        
+        result = _try_apply_single_diff(result_lines, search_lines, replace_lines)
+        block_results.append(result)
+        
+        if result["applied"]:
+            result_lines = result["new_lines"]
+    
+    all_applied = all(r["applied"] for r in block_results) if block_results else False
+    
+    return "\n".join(result_lines), all_applied, block_results
 
-        # Find where the search pattern starts in the original code
-        for i in range(len(result_lines) - len(search_lines) + 1):
-            if result_lines[i : i + len(search_lines)] == search_lines:
-                # Replace the matched section
-                result_lines[i : i + len(search_lines)] = replace_lines
-                break
 
-    return "\n".join(result_lines)
+def _try_apply_single_diff(
+    result_lines: List[str],
+    search_lines: List[str],
+    replace_lines: List[str],
+) -> dict:
+    """
+    Try to apply a single diff block using multiple matching strategies.
+    
+    Returns:
+        dict with keys: applied, match_strategy, search_preview, match_line, new_lines
+    """
+    search_preview = search_lines[0][:50] if search_lines else ""
+    
+    # Strategy 1: Exact match
+    match_line = _find_exact_match(result_lines, search_lines)
+    if match_line is not None:
+        new_lines = result_lines[:match_line] + replace_lines + result_lines[match_line + len(search_lines):]
+        return {
+            "applied": True,
+            "match_strategy": "exact",
+            "search_preview": search_preview,
+            "match_line": match_line,
+            "new_lines": new_lines,
+        }
+    
+    # Strategy 2: Trailing whitespace stripped
+    match_line = _find_match_stripped(result_lines, search_lines)
+    if match_line is not None:
+        new_lines = result_lines[:match_line] + replace_lines + result_lines[match_line + len(search_lines):]
+        return {
+            "applied": True,
+            "match_strategy": "trailing_whitespace_stripped",
+            "search_preview": search_preview,
+            "match_line": match_line,
+            "new_lines": new_lines,
+        }
+    
+    # Strategy 3: Normalize all whitespace (collapse multiple spaces)
+    match_line = _find_match_normalized(result_lines, search_lines)
+    if match_line is not None:
+        new_lines = result_lines[:match_line] + replace_lines + result_lines[match_line + len(search_lines):]
+        return {
+            "applied": True,
+            "match_strategy": "whitespace_normalized",
+            "search_preview": search_preview,
+            "match_line": match_line,
+            "new_lines": new_lines,
+        }
+    
+    # Strategy 4: Fuzzy match - anchor on first and last non-empty lines
+    match_line, match_len = _find_match_fuzzy(result_lines, search_lines)
+    if match_line is not None:
+        new_lines = result_lines[:match_line] + replace_lines + result_lines[match_line + match_len:]
+        return {
+            "applied": True,
+            "match_strategy": "fuzzy_anchor",
+            "search_preview": search_preview,
+            "match_line": match_line,
+            "new_lines": new_lines,
+        }
+    
+    # No match found
+    return {
+        "applied": False,
+        "match_strategy": None,
+        "search_preview": search_preview,
+        "match_line": None,
+        "new_lines": result_lines,
+    }
+
+
+def _find_exact_match(result_lines: List[str], search_lines: List[str]) -> Optional[int]:
+    """Find exact match, return starting line index or None."""
+    for i in range(len(result_lines) - len(search_lines) + 1):
+        if result_lines[i : i + len(search_lines)] == search_lines:
+            return i
+    return None
+
+
+def _find_match_stripped(result_lines: List[str], search_lines: List[str]) -> Optional[int]:
+    """Find match with trailing whitespace stripped."""
+    result_stripped = [line.rstrip() for line in result_lines]
+    search_stripped = [line.rstrip() for line in search_lines]
+    
+    for i in range(len(result_stripped) - len(search_stripped) + 1):
+        if result_stripped[i : i + len(search_stripped)] == search_stripped:
+            return i
+    return None
+
+
+def _find_match_normalized(result_lines: List[str], search_lines: List[str]) -> Optional[int]:
+    """Find match with all whitespace normalized (collapse multiple spaces)."""
+    def normalize(line: str) -> str:
+        return ' '.join(line.split())
+    
+    result_norm = [normalize(line) for line in result_lines]
+    search_norm = [normalize(line) for line in search_lines]
+    
+    for i in range(len(result_norm) - len(search_norm) + 1):
+        if result_norm[i : i + len(search_norm)] == search_norm:
+            return i
+    return None
+
+
+def _find_match_fuzzy(
+    result_lines: List[str], 
+    search_lines: List[str]
+) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Fuzzy match: anchor on first and last non-empty lines of search.
+    Returns (start_line, length) or (None, None).
+    """
+    # Get first and last non-empty lines from search
+    first_idx = None
+    last_idx = None
+    for i, line in enumerate(search_lines):
+        if line.strip():
+            if first_idx is None:
+                first_idx = i
+            last_idx = i
+    
+    if first_idx is None:
+        return None, None
+    
+    first_line = search_lines[first_idx].rstrip()
+    last_line = search_lines[last_idx].rstrip()
+    expected_span = last_idx - first_idx + 1
+    
+    # Find in result
+    for i in range(len(result_lines)):
+        if result_lines[i].rstrip() == first_line:
+            # Check if last line matches at expected distance
+            end_idx = i + expected_span - 1
+            if end_idx < len(result_lines) and result_lines[end_idx].rstrip() == last_line:
+                # Verify middle lines roughly match
+                middle_match = True
+                for j in range(first_idx + 1, last_idx):
+                    result_j = i + (j - first_idx)
+                    if result_j >= len(result_lines):
+                        middle_match = False
+                        break
+                    # Middle lines: just check they're similar (normalized)
+                    if ' '.join(search_lines[j].split()) != ' '.join(result_lines[result_j].split()):
+                        middle_match = False
+                        break
+                
+                if middle_match:
+                    # Calculate actual span in result (from i to where we need to replace)
+                    actual_len = len(search_lines)
+                    return i, actual_len
+    
+    return None, None
 
 
 def extract_diffs(

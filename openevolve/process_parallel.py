@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openevolve.config import Config
 from openevolve.database import Program, ProgramDatabase
 from openevolve.utils.metrics_utils import safe_numeric_average
+from openevolve.utils.code_utils import apply_diff, extract_diffs, format_diff_summary
 
 logger = logging.getLogger(__name__)
 
@@ -202,16 +203,30 @@ def _run_iteration_worker(
 
         # Parse response based on evolution mode
         if _worker_config.diff_based_evolution:
-            from openevolve.utils.code_utils import apply_diff, extract_diffs, format_diff_summary
-
             diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
             if not diff_blocks:
                 return SerializableResult(
                     error=f"No valid diffs found in response", iteration=iteration
                 )
 
-            child_code = apply_diff(parent.code, llm_response, _worker_config.diff_pattern)
+            child_code, all_applied, block_results = apply_diff(
+                parent.code, llm_response, _worker_config.diff_pattern
+            )
             changes_summary = format_diff_summary(diff_blocks)
+            
+            # Report diff application status
+            if not all_applied:
+                failed_blocks = [r for r in block_results if not r["applied"]]
+                failed_previews = [r["search_preview"] for r in failed_blocks]
+                return SerializableResult(
+                    error=f"Diff apply failed: {len(failed_blocks)}/{len(block_results)} blocks did not match. Failed blocks: {failed_previews}",
+                    iteration=iteration,
+                )
+            
+            # Add match strategies to changes summary for debugging
+            strategies = [r["match_strategy"] for r in block_results if r["applied"]]
+            if any(s != "exact" for s in strategies):
+                changes_summary += f" (matched via: {', '.join(set(strategies))})"
         else:
             from openevolve.utils.code_utils import parse_full_rewrite
 

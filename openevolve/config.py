@@ -254,6 +254,7 @@ class PromptConfig:
     # Template stochasticity
     use_template_stochasticity: bool = True
     template_variations: Dict[str, List[str]] = field(default_factory=dict)
+    template_variation_weights: Dict[str, List[float]] = field(default_factory=dict)
 
     # Meta-prompting
     # Note: meta-prompting features not implemented

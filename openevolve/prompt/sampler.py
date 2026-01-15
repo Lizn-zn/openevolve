@@ -401,12 +401,23 @@ class PromptSampler:
             inspirations, language, feature_dimensions
         )
 
-        # Combine into full history
-        return history_template.format(
-            previous_attempts=previous_attempts_str.strip(),
-            top_programs=combined_programs_str.strip(),
-            inspirations_section=inspirations_section_str,
-        )
+        # Build history dynamically - only include sections with content
+        history_parts = []
+        
+        if previous_attempts_str.strip():
+            history_parts.append("## Previous Attempts\n\n" + previous_attempts_str.strip())
+        
+        if combined_programs_str.strip():
+            history_parts.append("## Top Performing Programs\n\n" + combined_programs_str.strip())
+        
+        if inspirations_section_str.strip():
+            history_parts.append(inspirations_section_str.strip())
+        
+        # Return empty string if no content, otherwise join with double newlines
+        if not history_parts:
+            return ""
+        
+        return "\n\n".join(history_parts)
 
     def _format_inspirations_section(
         self,
@@ -566,7 +577,14 @@ class PromptSampler:
         # Apply variations defined in the config
         for key, variations in self.config.template_variations.items():
             if variations and f"{{{key}}}" in result:
-                chosen_idx = random.randrange(len(variations))
+                # Check if weights are defined for this key
+                weights = self.config.template_variation_weights.get(key)
+                if weights and len(weights) == len(variations):
+                    # Use weighted random selection
+                    chosen_idx = random.choices(range(len(variations)), weights=weights)[0]
+                else:
+                    # Fall back to uniform random selection
+                    chosen_idx = random.randrange(len(variations))
                 chosen_variation = variations[chosen_idx]
                 result = result.replace(f"{{{key}}}", chosen_variation)
                 # Log which variation was chosen (extract first line as identifier)
