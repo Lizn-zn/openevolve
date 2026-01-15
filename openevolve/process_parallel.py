@@ -264,10 +264,19 @@ def _run_iteration_worker(
         # Get artifacts
         artifacts = _worker_evaluator.get_pending_artifacts(child_id)
 
+        # Check if evaluator returned revised_code (for auto-fixing syntax errors)
+        # If so, use the revised code instead of the original child_code
+        final_code = child_code
+        if artifacts and "revised_code" in artifacts:
+            final_code = artifacts["revised_code"]
+            logger.info(f"Iteration {iteration}: Using revised code (auto-fixed syntax errors)")
+            # Remove revised_code from artifacts to avoid storing it twice
+            del artifacts["revised_code"]
+
         # Create child program
         child_program = Program(
             id=child_id,
-            code=child_code,
+            code=final_code,
             language=_worker_config.language,
             parent_id=parent.id,
             generation=parent.generation + 1,

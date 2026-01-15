@@ -138,6 +138,15 @@ async def run_iteration_with_shared_db(
 
         # Handle artifacts if they exist
         artifacts = evaluator.get_pending_artifacts(child_id)
+        
+        # Check if evaluator returned revised_code (for auto-fixing syntax errors)
+        # If so, use the revised code instead of the original child_code
+        final_code = child_code
+        if artifacts and "revised_code" in artifacts:
+            final_code = artifacts["revised_code"]
+            logger.info(f"Iteration {iteration+1}: Using revised code (auto-fixed syntax errors)")
+            # Remove revised_code from artifacts to avoid storing it twice
+            del artifacts["revised_code"]
 
         # Set template_key of Prompts
         template_key = "full_rewrite_user" if not config.diff_based_evolution else "diff_user"
@@ -145,7 +154,7 @@ async def run_iteration_with_shared_db(
         # Create a child program
         result.child_program = Program(
             id=child_id,
-            code=child_code,
+            code=final_code,
             language=config.language,
             parent_id=parent.id,
             generation=parent.generation + 1,
