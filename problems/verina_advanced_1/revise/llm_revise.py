@@ -1,25 +1,32 @@
 """
 LLM 智能修复模块
 
-使用 LLM 来理解错误并尝试修复 Lean 代码。
+使用 LLM 进行最小化 sorry 填充，通过 SEARCH/REPLACE 格式应用修改。
 """
 
 import asyncio
 import logging
+import sys
+from pathlib import Path
 from typing import Tuple
 
 import openai
 
 from .config import get_config, ReviseConfig
 from .prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
-from .utils import (
-    extract_lean_code_from_response,
-    format_error_messages,
-    validate_code_structure,
-    force_preserve_outside_block,
-)
+from .utils import format_error_messages
+
+# 导入项目的 diff 工具
+_OPENEVOLVE_ROOT = str(Path(__file__).parent.parent.parent.parent)
+if _OPENEVOLVE_ROOT not in sys.path:
+    sys.path.insert(0, _OPENEVOLVE_ROOT)
+
+from openevolve.utils.code_utils import apply_diff, extract_diffs
 
 logger = logging.getLogger(__name__)
+
+# SEARCH/REPLACE 的正则模式
+DIFF_PATTERN = r"<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE"
 
 
 def _create_client(config: ReviseConfig):
@@ -66,6 +73,8 @@ async def llm_revise_async(
 ) -> Tuple[str, bool]:
     """
     使用 LLM 异步修复 Lean 代码
+    
+    通过 SEARCH/REPLACE 格式进行最小化修改。
     
     Args:
         code: 原始 Lean 代码
@@ -136,34 +145,54 @@ async def llm_revise_async(
             lambda: client.chat.completions.create(**api_params)
         )
         
-        result = response.choices[0].message.content
+        llm_response = response.choices[0].message.content
         
         if config.debug:
-            logger.debug(f"[LLM Revise] Response:\n{result[:500]}...")
+            logger.debug(f"[LLM Revise] Response:\n{llm_response}")
         
-        # 提取代码
-        fixed_code = extract_lean_code_from_response(result)
+        # 提取 diff blocks
+        diff_blocks = extract_diffs(llm_response, DIFF_PATTERN)
         
-        if not fixed_code:
-            logger.warning("[LLM Revise] Could not extract code from response")
+        if not diff_blocks:
+            logger.warning("[LLM Revise] No SEARCH/REPLACE blocks found in response")
             return code, False
         
-        # 强制保留 EVOLVE-BLOCK 外的原始代码
-        # 这样即使 LLM 修改了 BLOCK 外的内容，我们也只取 BLOCK 内的修改
-        fixed_code = force_preserve_outside_block(code, fixed_code)
+        logger.info(f"[LLM Revise] Found {len(diff_blocks)} SEARCH/REPLACE blocks")
         
-        # 验证代码结构（现在应该总是通过，因为我们强制保留了外部结构）
-        is_valid, error_msg = validate_code_structure(code, fixed_code)
-        if not is_valid:
-            logger.warning(f"[LLM Revise] Invalid code structure: {error_msg}")
+        # 应用 diffs
+        fixed_code, all_applied, block_results = apply_diff(code, llm_response, DIFF_PATTERN)
+        
+        # 检查应用结果
+        applied_count = sum(1 for r in block_results if r["applied"])
+        total_count = len(block_results)
+        
+        if applied_count == 0:
+            logger.warning(f"[LLM Revise] No diffs could be applied (0/{total_count})")
+            # 打印失败的 blocks 用于调试
+            for r in block_results:
+                if not r["applied"]:
+                    logger.debug(f"  Failed to match: {r['search_preview'][:50]}...")
             return code, False
+        
+        if not all_applied:
+            logger.warning(f"[LLM Revise] Partial success: {applied_count}/{total_count} diffs applied")
+            # 报告匹配策略
+            for r in block_results:
+                if r["applied"]:
+                    logger.debug(f"  Applied via {r['match_strategy']}: {r['search_preview'][:30]}...")
+        else:
+            logger.info(f"[LLM Revise] All {total_count} diffs applied successfully")
+            # 报告匹配策略（如果不是精确匹配）
+            strategies = [r["match_strategy"] for r in block_results if r["applied"]]
+            if any(s != "exact" for s in strategies):
+                logger.info(f"  Match strategies: {', '.join(set(strategies))}")
         
         # 检查是否有实际修改
         if fixed_code.strip() == code.strip():
-            logger.info("[LLM Revise] No changes made by LLM")
+            logger.info("[LLM Revise] No actual changes made")
             return code, False
         
-        logger.info("[LLM Revise] Successfully fixed code")
+        logger.info("[LLM Revise] Successfully fixed code via SEARCH/REPLACE")
         return fixed_code, True
         
     except Exception as e:
@@ -188,4 +217,3 @@ def llm_revise(
         (fixed_code, success)
     """
     return asyncio.run(llm_revise_async(code, error_messages, config))
-
