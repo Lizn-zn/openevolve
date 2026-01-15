@@ -236,6 +236,206 @@ def main():
     return 0 if all_passed else 1
 
 
+def test_end_to_end():
+    """
+    端到端测试：真实的 verify -> revise -> verify 流程
+    
+    模拟真实场景：
+    1. 有一段编译错误的 Lean 代码
+    2. 用 Lean server 验证，获取错误信息
+    3. 用 revise 模块修复
+    4. 再次用 Lean server 验证
+    """
+    print("\n" + "=" * 60)
+    print("端到端测试: Verify -> Revise -> Verify")
+    print("=" * 60 + "\n")
+    
+    # 一段有编译错误的 Lean 代码
+    broken_code = """import Mathlib
+set_option maxHeartbeats 0
+
+namespace verina_advanced_1
+
+-- EVOLVE-BLOCK-START
+
+-- 这个 lemma 有语法错误：Or_flip 不存在
+lemma lemma1_nonempty (nums : List Int) : nums.length > 0 := by
+  have hlen : nums.length = 0 ∨ nums.length > 0 := by
+    exact lt_or_eq_of_le (Nat.zero_le _ ) |> Or.symm |> Or_flip ?_
+  sorry
+
+-- 这个 theorem 依赖上面的 lemma
+theorem FindSingleNumber_spec_satisfied (nums: List Int) : True := by
+  have h := lemma1_nonempty nums
+  exact True.intro
+
+-- EVOLVE-BLOCK-END
+
+end verina_advanced_1
+"""
+    
+    print("=" * 40)
+    print("Step 1: 原始代码 (有编译错误)")
+    print("=" * 40)
+    # 只打印 EVOLVE-BLOCK 部分
+    for line in broken_code.split('\n'):
+        if 'EVOLVE-BLOCK' in line or ('lemma' in line.lower() or 'theorem' in line.lower() or 'sorry' in line or 'exact' in line):
+            print(line)
+    
+    print("\n" + "=" * 40)
+    print("Step 2: 第一次验证 (获取错误信息)")
+    print("=" * 40)
+    
+    from revise.lean_verify import verify_lean_code, check_verification_result
+    
+    result1 = verify_lean_code(broken_code)
+    is_valid_no_sorry, is_valid_with_sorry, errors = check_verification_result(result1)
+    
+    print(f"编译通过 (无 sorry): {is_valid_no_sorry}")
+    print(f"编译通过 (有 sorry): {is_valid_with_sorry}")
+    print(f"错误数量: {len(errors)}")
+    
+    if errors:
+        print("\n错误信息:")
+        for i, err in enumerate(errors[:5], 1):
+            # 简化错误信息显示
+            err_str = str(err)
+            if len(err_str) > 100:
+                err_str = err_str[:100] + "..."
+            print(f"  {i}. {err_str}")
+    
+    if is_valid_with_sorry:
+        print("\n⚠️ 代码已经可以编译，不需要修复")
+        return True
+    
+    print("\n" + "=" * 40)
+    print("Step 3: 调用 revise 模块修复")
+    print("=" * 40)
+    
+    print("正在修复...")
+    revised_code, success, info = revise_proof(broken_code, errors)
+    
+    print(f"修复成功: {success}")
+    print(f"修复方式: {info}")
+    
+    if not success:
+        print("❌ 修复失败")
+        return False
+    
+    print("\n修复后的代码 (EVOLVE-BLOCK 部分):")
+    in_block = False
+    for line in revised_code.split('\n'):
+        if 'EVOLVE-BLOCK-START' in line:
+            in_block = True
+        if in_block:
+            print(line)
+        if 'EVOLVE-BLOCK-END' in line:
+            break
+    
+    print("\n" + "=" * 40)
+    print("Step 4: 第二次验证 (检查修复结果)")
+    print("=" * 40)
+    
+    result2 = verify_lean_code(revised_code)
+    is_valid_no_sorry2, is_valid_with_sorry2, errors2 = check_verification_result(result2)
+    
+    print(f"编译通过 (无 sorry): {is_valid_no_sorry2}")
+    print(f"编译通过 (有 sorry): {is_valid_with_sorry2}")
+    print(f"错误数量: {len(errors2)}")
+    
+    if is_valid_with_sorry2:
+        print("\n✅ 修复成功！代码现在可以编译通过")
+        
+        # 额外信息：检查 sorry 数量
+        sorry_count = revised_code.count('sorry')
+        print(f"剩余 sorry 数量: {sorry_count}")
+        
+        return True
+    else:
+        print("\n❌ 修复后仍然有编译错误:")
+        for i, err in enumerate(errors2[:3], 1):
+            print(f"  {i}. {str(err)[:80]}...")
+        return False
+
+
+def test_end_to_end_with_real_file():
+    """
+    端到端测试：使用真实的 checkpoint 文件
+    """
+    print("\n" + "=" * 60)
+    print("端到端测试: 使用真实 checkpoint 文件")
+    print("=" * 60 + "\n")
+    
+    # 尝试找一个真实的 checkpoint 文件
+    import os
+    checkpoint_base = Path(__file__).parent.parent / "openevolve_output" / "checkpoints"
+    
+    if not checkpoint_base.exists():
+        print(f"⏭️ Checkpoint 目录不存在: {checkpoint_base}")
+        return True
+    
+    # 找最新的 checkpoint
+    checkpoints = sorted([d for d in checkpoint_base.iterdir() if d.is_dir()])
+    if not checkpoints:
+        print("⏭️ 没有找到 checkpoint")
+        return True
+    
+    latest = checkpoints[-1]
+    program_file = latest / "best_program.lean"
+    
+    if not program_file.exists():
+        print(f"⏭️ 程序文件不存在: {program_file}")
+        return True
+    
+    print(f"使用 checkpoint: {latest.name}")
+    
+    with open(program_file, 'r') as f:
+        code = f.read()
+    
+    print(f"代码长度: {len(code)} 字符")
+    print(f"代码行数: {len(code.split(chr(10)))} 行")
+    
+    # 验证
+    from revise.lean_verify import verify_lean_code, check_verification_result
+    
+    print("\n验证中...")
+    result = verify_lean_code(code)
+    is_valid_no_sorry, is_valid_with_sorry, errors = check_verification_result(result)
+    
+    print(f"编译通过 (无 sorry): {is_valid_no_sorry}")
+    print(f"编译通过 (有 sorry): {is_valid_with_sorry}")
+    print(f"错误数量: {len(errors)}")
+    
+    if is_valid_with_sorry:
+        print("✅ 代码编译通过，无需修复")
+        return True
+    
+    if errors:
+        print("\n尝试修复...")
+        revised_code, success, info = revise_proof(code, errors)
+        print(f"修复结果: {'成功' if success else '失败'}, 方式: {info}")
+        
+        if success:
+            result2 = verify_lean_code(revised_code)
+            _, is_valid2, _ = check_verification_result(result2)
+            print(f"修复后编译: {'✅ 通过' if is_valid2 else '❌ 失败'}")
+    
+    return True
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+    parser = argparse.ArgumentParser(description="Revise 模块测试")
+    parser.add_argument("--e2e", action="store_true", help="只运行端到端测试")
+    parser.add_argument("--real", action="store_true", help="使用真实 checkpoint 测试")
+    args = parser.parse_args()
+    
+    if args.e2e:
+        success = test_end_to_end()
+        sys.exit(0 if success else 1)
+    elif args.real:
+        success = test_end_to_end_with_real_file()
+        sys.exit(0 if success else 1)
+    else:
+        sys.exit(main())
 
