@@ -1,0 +1,35 @@
+# Revise 模块配置
+# 用于修复 Lean 代码中的编译错误
+
+# Lean 验证服务器配置
+lean_server:
+  url: "http://localhost:8000"
+  timeout: 60             # 验证超时时间（秒）
+  timeout_buffer: 60      # 额外的 HTTP 超时缓冲
+
+# 是否启用 LLM 修复
+use_llm: true
+
+# LLM 配置
+llm:
+  # API 配置（支持 Azure OpenAI 和 OpenAI 兼容 API）
+  api_base: "https://ai4mtest3.openai.azure.com/"
+  api_version: "2025-01-01-preview"
+  
+  # Azure AD 认证
+  use_azure_ad: true
+  managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+  
+  # 模型配置
+  model: "azure-gpt-5.1"
+  temperature: 0.2        # 低温度保证稳定性
+  max_tokens: 8192
+  timeout: 120            # 秒
+
+# 重试配置
+max_retries: 1            # LLM 修复重试次数
+fallback_to_sorry: true   # LLM 失败后回退到 sorry 替换
+
+# 调试配置
+debug: false              # 是否输出详细日志
+

@@ -53,6 +53,9 @@ htmlcov/
 
 # For SR
 secrets.yaml
-problems
 run.sh
 test/
+
+# Problem outputs (keep problem configs, ignore outputs)
+**/openevolve_output/
+**/openevolve_output_*/

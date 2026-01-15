@@ -1,0 +1,217 @@
+# Configuration for Lean 4 theorem proving evolution
+max_iterations: 500
+checkpoint_interval: 10
+log_level: "INFO"
+
+# Early stopping settings
+# early_stopping_patience: 100
+# convergence_threshold: 0.001
+# early_stopping_metric: "combined_score"
+
+# Lean language configuration
+language: "lean"
+file_suffix: ".lean"
+
+# LLM configuration
+llm:
+  models:
+    # Azure GPT-5.1
+    - name: "azure-gpt-5.1"
+      weight: 0.6
+      api_base: "https://ai4mtest3.openai.azure.com/"
+      use_azure_ad: true
+      managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+      api_version: "2025-01-01-preview"
+    
+    # Azure GPT-5.2 (另一个 endpoint)
+    - name: "azure-gpt-5.2"
+      weight: 0.3
+      api_base: "https://ai4mtest3.openai.azure.com/"
+      use_azure_ad: true
+      managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+      api_version: "2025-01-01-preview"
+    
+    # OpenRouter 模型
+    - name: "anthropic/claude-sonnet-4.5"
+      weight: 0.05
+      api_base: "https://openrouter.ai/api/v1"
+      api_key: ${OPENROUTER_API_KEY}
+    
+    - name : "google/gemini-3-pro-preview"
+      weight: 0.05
+      api_base: "https://openrouter.ai/api/v1"
+      api_key: ${OPENROUTER_API_KEY}
+
+  # Inference parameters
+  temperature: 0.7
+  max_tokens: 65536
+  timeout: 1800
+  
+  # Reasoning model parameters
+  # reasoning_effort: medium
+
+# Prompt configuration
+prompt:
+  # Custom template directory
+  template_dir: "problems/verina_advanced_1/prompts"
+  
+  # Disable "code too long" simplification suggestion
+  suggest_simplification_after_chars: null
+  
+  system_message: |
+    You are an expert in Lean 4 theorem proving. Your task is to reduce the complexity of the hardest unsolved goal.
+
+    ### How to Read the Goal
+    Look at `unsolved_goals` above. It shows the **hardest goal** that needs work:
+    - `[Hardest goal, complexity=N] line X: ⊢ <goal_type>`
+    - **Your task: reduce this complexity by decomposition or simplification**
+    
+    ### Scoring (Fitness function) Mechanism
+    - Score depends on the **maximum complexity** among all `sorry` goals, Lower max complexity = Higher score
+    - To improve: reduce the complexity of the hardest goal
+    - Two ways: **decompose** into smaller lemmas (with cleaned hypothesis or simplified goal), or **simplify** the goal directly
+    - **IMPORTANT**: 
+      - We compute score AT each `sorry` location. If you can't complete a proof, you MUST add `sorry` as placeholder — otherwise we cannot score it!
+      - We give very low score when Lean compilation fails. If you are not sure about the proof, you SHOULD remain the correct part and use `sorry` as completion.
+    
+
+    
+    ## Output Format
+    - Please conduct thoughtful reasoning before you output the code, and output the reasoning in a markdown block.
+    - Wrap all code in ```lean blocks
+    - ONLY modify code between `-- EVOLVE-BLOCK-START` and `-- EVOLVE-BLOCK-END`
+    - Avoid universe polymorphism issues
+
+  # Enable template stochasticity
+  use_template_stochasticity: true
+  
+  # Two proof strategies with weights (e.g., 70% decomposition, 30% tactics)
+  template_variation_weights:
+    prove: [0.8, 0.2]
+  
+  template_variations:
+    prove:
+      # ========== Strategy 1: Decomposition (Split into Smaller Lemmas) ==========
+      - |
+        ## Strategy: Decomposition — Reduce Complexity by Splitting
+        
+        **Goal: Break the hardest goal into 2-3 smaller lemmas, each with lower complexity.**
+        
+        ### Why Decomposition Works
+        - The hardest goal has complexity=N (shown in `unsolved_goals`)
+        - If you split it into 2 lemmas, each might have complexity ~N/2
+        - Score improves because `max(complexity)` decreases!
+        
+        ### Decomposition Approach
+        1. **Analyze the goal structure** — look for ∧, ∨, ∀, ∃, →, or recursive definitions
+        2. **Create helper lemmas** — each handles a smaller part of the goal
+        3. **Combine helpers** — use `exact`, `apply`, or `constructor` to complete the original
+        4. **Use `sorry` in helpers** — it's OK, each sorry will have lower complexity
+        
+        ### Common Patterns
+        | Goal Pattern | Decomposition Strategy |
+        |--------------|----------------------|
+        | `f x = g x` (recursive f) | Prove by `induction x` |
+        | `∃ x, P x` | First prove `P witness`, then `use witness` |
+        | `P ∧ Q` | Split into two lemmas, use `constructor` |
+        | `∀ x, P x → Q x` | Use `intro x hP`, then prove `Q x` |
+        
+        ### Example: Splitting a Complex Goal
+        ```lean
+        -- Before: complexity=98
+        lemma hard_goal : (filterlist x nums).length = nums.count x := by sorry
+        
+        -- After: two smaller goals
+        lemma base_case : (filterlist x []).length = [].count x := by sorry  -- complexity ~30
+        lemma ind_step (y : Int) (ys : List Int) (ih : ...) : ... := by sorry  -- complexity ~50
+        lemma hard_goal : (filterlist x nums).length = nums.count x := by
+          induction nums with
+          | nil => exact base_case
+          | cons y ys ih => exact ind_step y ys ih
+        ```
+        
+        ### Syntax Reminder
+        ```lean
+        lemma lemmaX (args) : <goal_type> := by
+          <tactics>
+          sorry  -- Each sorry has lower complexity than the original
+        ```
+
+
+      # ========== Strategy 2: Simplification (Apply Tactics Directly, NO new lemmas) ==========
+      - |
+        ## Strategy: Simplification — Apply Tactics Directly (DO NOT create new lemmas)
+        
+        **Goal: Use automation tactics to close or simplify goals. **
+
+        ### Why Simplification Works
+        - Tactics like `simp`, `unfold`, `rw` can transform a complex goal into a simpler one
+        - After simplification, the remaining `sorry` has lower complexity
+        - Example: `simp [filterlist]` might reduce complexity from 98 to 60
+
+        ### Simplification Approach
+        - Try to simplify the goal using the following tactics:
+        ```lean
+        grind                         -- powerful automation, try first!
+        simp +decide [..]     -- simp with decidability
+        aesop                         -- general search
+        omega                         -- linear arithmetic
+        by_cases h : cond <;> simp +decide [*]  -- case split
+        split_ifs <;> simp_all +decide [..]    -- if-then-else
+        induction' xs with x xs ih <;> simp +decide [*]  -- induction
+        ```
+        - Use `try <tactics>; sorry` for uncertain steps (this will ensure the syntax to be correct)
+        
+        ### Example: Inline proof with automation
+        ```lean
+        -- GOOD: Use `have` with automation, no new lemma
+        have h : filterlist.aux x lst = List.filter (fun y => y = x) lst := by
+          induction' lst with y ys ih
+          · rfl
+          · by_cases hy : y = x <;> simp +decide [*, filterlist.aux]
+        
+        -- GOOD: Direct grind for list facts
+        have h : (List.filter (fun y => y = x) lst).length = List.count x lst := by grind
+        ```
+
+        ### Syntax Reminder
+        ```lean
+        lemma lemmaX (args) : <goal_type> := by
+          <tactics>
+          sorry  -- Each sorry has lower complexity than the original
+        ```
+        
+  # Include compilation error feedback
+  include_artifacts: true
+  max_artifact_bytes: 16384
+
+  num_top_programs: 0
+  num_diverse_programs: 0
+
+# Database configuration
+database:
+  population_size: 50
+  archive_size: 30
+  num_islands: 4
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.1
+  exploitation_ratio: 0.7
+
+  # similarity_threshold: 0.99
+  # embedding_model: "openrouter-openai/text-embedding-3-small"
+
+
+# Evaluator configuration
+evaluator:
+  timeout: 120  # Lean compilation may take longer
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+# Evolution settings
+diff_based_evolution: true  # Use diff mode for more precise proof modifications
+max_code_length: 100000
+
+# Re-evaluation settings (for re-evaluating after updating scoring function)
+# re_evaluate_on_load: true   # Re-evaluate when loading checkpoint
+# re_evaluate_best_only: false  # false = re-evaluate all programs
+
