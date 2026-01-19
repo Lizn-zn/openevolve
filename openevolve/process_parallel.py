@@ -186,9 +186,10 @@ def _run_iteration_worker(
         iteration_start = time.time()
 
         # Generate code modification (sync wrapper for async)
+        # Also get model name for logging
         try:
-            llm_response = asyncio.run(
-                _worker_llm_ensemble.generate_with_context(
+            llm_response, model_name = asyncio.run(
+                _worker_llm_ensemble.generate_with_context_and_model(
                     system_message=prompt["system"],
                     messages=[{"role": "user", "content": prompt["user"]}],
                 )
@@ -286,6 +287,7 @@ def _run_iteration_worker(
                 "changes": changes_summary,
                 "parent_metrics": parent.metrics,
                 "island": parent_island,
+                "evolution_model": model_name,  # 保存使用的模型名称
             },
         )
 
@@ -659,6 +661,18 @@ class ProcessParallelController:
                             ]
                         )
                         logger.info(f"Metrics: {metrics_str}")
+
+                        # Log combined_score change (parent -> child)
+                        if "combined_score" in child_program.metrics:
+                            child_score = child_program.metrics["combined_score"]
+                            parent_program = self.database.programs.get(result.parent_id)
+                            if parent_program and "combined_score" in parent_program.metrics:
+                                parent_score = parent_program.metrics["combined_score"]
+                                delta = child_score - parent_score
+                                delta_str = f"+{delta:.4f}" if delta >= 0 else f"{delta:.4f}"
+                                logger.info(
+                                    f"Score change: {parent_score:.4f} -> {child_score:.4f} ({delta_str})"
+                                )
 
                         # Check if this is the first program without combined_score
                         if not hasattr(self, "_warned_about_combined_score"):

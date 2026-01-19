@@ -13,7 +13,12 @@ from typing import Tuple
 import openai
 
 from .config import get_config, ReviseConfig
-from .prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from .prompts import (
+    FIX_SYSTEM_PROMPT,
+    FIX_USER_PROMPT_TEMPLATE,
+    ELIMINATE_SYSTEM_PROMPT,
+    ELIMINATE_USER_PROMPT_TEMPLATE,
+)
 from .utils import format_error_messages
 
 # 导入项目的 diff 工具
@@ -23,7 +28,7 @@ if _OPENEVOLVE_ROOT not in sys.path:
 
 from openevolve.utils.code_utils import apply_diff, extract_diffs
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("openevolve.revise.llm")
 
 # SEARCH/REPLACE 的正则模式
 DIFF_PATTERN = r"<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE"
@@ -70,7 +75,8 @@ async def llm_revise_async(
     code: str,
     error_messages: list,
     config: ReviseConfig = None,
-) -> Tuple[str, bool]:
+    strategy: str = "eliminate",
+) -> Tuple[str, bool, str]:
     """
     使用 LLM 异步修复 Lean 代码
     
@@ -80,21 +86,32 @@ async def llm_revise_async(
         code: 原始 Lean 代码
         error_messages: 错误消息列表
         config: 配置（可选，默认使用全局配置）
+        strategy: 修复策略
+            - "fix": 尝试真正修复错误，不使用 sorry
+            - "eliminate": 使用 sorry 消除错误（默认）
         
     Returns:
-        (fixed_code, success)
+        (fixed_code, success, llm_response)
     """
     if config is None:
         config = get_config()
     
     if not error_messages:
-        return code, False
+        return code, False, ""
+    
+    # 根据策略选择 prompt
+    if strategy == "fix":
+        system_prompt = FIX_SYSTEM_PROMPT
+        user_template = FIX_USER_PROMPT_TEMPLATE
+    else:
+        system_prompt = ELIMINATE_SYSTEM_PROMPT
+        user_template = ELIMINATE_USER_PROMPT_TEMPLATE
     
     # 格式化错误信息
     errors_text = format_error_messages(error_messages)
     
     # 构建 prompt
-    user_prompt = USER_PROMPT_TEMPLATE.format(
+    user_prompt = user_template.format(
         code=code,
         errors=errors_text,
     )
@@ -121,7 +138,7 @@ async def llm_revise_async(
             api_params = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 "max_completion_tokens": config.llm.max_tokens,
@@ -131,7 +148,7 @@ async def llm_revise_async(
             api_params = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": config.llm.temperature,
@@ -154,57 +171,34 @@ async def llm_revise_async(
         diff_blocks = extract_diffs(llm_response, DIFF_PATTERN)
         
         if not diff_blocks:
-            logger.warning("[LLM Revise] No SEARCH/REPLACE blocks found in response")
-            return code, False
-        
-        logger.info(f"[LLM Revise] Found {len(diff_blocks)} SEARCH/REPLACE blocks")
+            return code, False, llm_response
         
         # 应用 diffs
         fixed_code, all_applied, block_results = apply_diff(code, llm_response, DIFF_PATTERN)
         
         # 检查应用结果
         applied_count = sum(1 for r in block_results if r["applied"])
-        total_count = len(block_results)
         
         if applied_count == 0:
-            logger.warning(f"[LLM Revise] No diffs could be applied (0/{total_count})")
-            # 打印失败的 blocks 用于调试
-            for r in block_results:
-                if not r["applied"]:
-                    logger.debug(f"  Failed to match: {r['search_preview'][:50]}...")
-            return code, False
-        
-        if not all_applied:
-            logger.warning(f"[LLM Revise] Partial success: {applied_count}/{total_count} diffs applied")
-            # 报告匹配策略
-            for r in block_results:
-                if r["applied"]:
-                    logger.debug(f"  Applied via {r['match_strategy']}: {r['search_preview'][:30]}...")
-        else:
-            logger.info(f"[LLM Revise] All {total_count} diffs applied successfully")
-            # 报告匹配策略（如果不是精确匹配）
-            strategies = [r["match_strategy"] for r in block_results if r["applied"]]
-            if any(s != "exact" for s in strategies):
-                logger.info(f"  Match strategies: {', '.join(set(strategies))}")
+            return code, False, llm_response
         
         # 检查是否有实际修改
         if fixed_code.strip() == code.strip():
-            logger.info("[LLM Revise] No actual changes made")
-            return code, False
+            return code, False, llm_response
         
-        logger.info("[LLM Revise] Successfully fixed code via SEARCH/REPLACE")
-        return fixed_code, True
+        return fixed_code, True, llm_response
         
     except Exception as e:
         logger.error(f"[LLM Revise] API call failed: {e}")
-        return code, False
+        return code, False, ""
 
 
 def llm_revise(
     code: str,
     error_messages: list,
     config: ReviseConfig = None,
-) -> Tuple[str, bool]:
+    strategy: str = "eliminate",
+) -> Tuple[str, bool, str]:
     """
     使用 LLM 同步修复 Lean 代码
     
@@ -212,8 +206,9 @@ def llm_revise(
         code: 原始 Lean 代码
         error_messages: 错误消息列表
         config: 配置（可选）
+        strategy: 修复策略 ("fix" 或 "eliminate")
         
     Returns:
-        (fixed_code, success)
+        (fixed_code, success, llm_response)
     """
-    return asyncio.run(llm_revise_async(code, error_messages, config))
+    return asyncio.run(llm_revise_async(code, error_messages, config, strategy))

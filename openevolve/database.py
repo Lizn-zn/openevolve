@@ -841,6 +841,14 @@ class ProgramDatabase:
         program_dict = program.to_dict()
         if prompts:
             program_dict["prompts"] = prompts
+        
+        # Convert artifacts_json from string to dict for better readability in saved files
+        if program_dict.get("artifacts_json") and isinstance(program_dict["artifacts_json"], str):
+            try:
+                program_dict["artifacts_json"] = json.loads(program_dict["artifacts_json"])
+            except json.JSONDecodeError:
+                pass  # Keep as string if parsing fails
+        
         program_path = os.path.join(programs_dir, f"{program.id}.json")
 
         with open(program_path, "w", encoding="utf-8") as f:
@@ -2557,7 +2565,11 @@ class ProgramDatabase:
         # Load small artifacts from JSON
         if program.artifacts_json:
             try:
-                small_artifacts = json.loads(program.artifacts_json)
+                # Handle both dict (from checkpoint) and string (from runtime)
+                if isinstance(program.artifacts_json, dict):
+                    small_artifacts = program.artifacts_json
+                else:
+                    small_artifacts = json.loads(program.artifacts_json)
                 artifacts.update(small_artifacts)
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to decode artifacts JSON for program {program_id}: {e}")

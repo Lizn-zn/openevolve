@@ -1,5 +1,5 @@
-# Configuration for Lean 4 theorem proving evolution
-max_iterations: 50
+# Configuration for Lean 4 theorem proving evolution - Stage 1 (Decomposition & Simplification)
+max_iterations: 500
 checkpoint_interval: 10
 log_level: "INFO"
 
@@ -32,15 +32,15 @@ llm:
       api_version: "2025-01-01-preview"
     
     # OpenRouter 模型
-    # - name: "anthropic/claude-sonnet-4.5"
-    #   weight: 0.0
-    #   api_base: "https://openrouter.ai/api/v1"
-    #   api_key: ${OPENROUTER_API_KEY}
+    - name: "anthropic/claude-sonnet-4.5"
+      weight: 0.05
+      api_base: "https://openrouter.ai/api/v1"
+      api_key: ${OPENROUTER_API_KEY}
     
-    # - name : "google/gemini-3-pro-preview"
-    #   weight: 0.0
-    #   api_base: "https://openrouter.ai/api/v1"
-    #   api_key: ${OPENROUTER_API_KEY}
+    - name : "google/gemini-3-pro-preview"
+      weight: 0.05
+      api_base: "https://openrouter.ai/api/v1"
+      api_key: ${OPENROUTER_API_KEY}
 
   # Inference parameters
   temperature: 0.7
@@ -86,9 +86,9 @@ prompt:
   # Enable template stochasticity
   use_template_stochasticity: true
   
-  # Three proof strategies with weights
+  # Two proof strategies with weights (Decomposition & Simplification only)
   template_variation_weights:
-    prove: [0.0, 0.8, 0.2]
+    prove: [0.8, 0.2]
   
   template_variations:
     prove:
@@ -182,22 +182,6 @@ prompt:
           sorry  -- Each sorry has lower complexity than the original
         ```
 
-      # ========== Strategy 3: Complete Proof (Try to Close a Sorry) ==========
-      - |
-        ## Strategy: Complete Proof — Close the Hardest Sorry (NO sorry allowed!)
-        
-        **Goal: Try to FULLY PROVE the hardest sorry.**
-        
-        ### Why Completion Works
-        - Once you fully prove the hardest sorry, it's REMOVED from the complexity list
-        - Even if other sorries still exist, you've made REAL progress
-        - Completing a complexity-98 sorry is better than splitting it into two 60s!
-
-        ### IMPORTANT RULES
-        1. We can trust the Lean 4 compiler, so simp +decide [...] is better than simp [...]
-        2. The automation tactics grind and aesop are powerful, try them first in a safe way (wrapped by try ...; sorry)!
-        3. Carefully and Thoughtfully consider the proof, try to keep the proof steps completely correct.
-        
   # Include compilation error feedback
   include_artifacts: true
   max_artifact_bytes: 16384

@@ -13,7 +13,7 @@ use_llm: true
 # LLM 配置
 llm:
   # API 配置（支持 Azure OpenAI 和 OpenAI 兼容 API）
-  api_base: "https://ai4mtest3.openai.azure.com/"
+  api_base: "https://ai4mtest1.openai.azure.com/"
   api_version: "2025-01-01-preview"
   
   # Azure AD 认证
@@ -21,15 +21,16 @@ llm:
   managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
   
   # 模型配置
-  model: "azure-gpt-5.1"
+  model: "azure-gpt-5.2"
   temperature: 0.2        # 低温度保证稳定性
   max_tokens: 8192
   timeout: 120            # 秒
 
-# 重试配置
-max_retries: 1            # LLM 修复重试次数
-fallback_to_sorry: true   # LLM 失败后回退到 sorry 替换
+# 修复策略配置
+# Pipeline: Fix -> Eliminate -> Sorry硬替换
+fix_max_retries: 5        # Fix 策略的重试次数（尝试真正修复，不用 sorry）
+eliminate_max_retries: 1  # Eliminate 策略的重试次数（用 sorry 消除错误）
+fallback_to_sorry: true   # 最后回退到 sorry 硬替换
 
 # 调试配置
 debug: false              # 是否输出详细日志
-

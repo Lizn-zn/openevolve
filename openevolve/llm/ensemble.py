@@ -67,6 +67,20 @@ class LLMEnsemble:
         model = self._sample_model()
         return await model.generate_with_context(system_message, messages, **kwargs)
 
+    async def generate_with_context_and_model(
+        self, system_message: str, messages: List[Dict[str, str]], **kwargs
+    ) -> Tuple[str, str]:
+        """
+        Generate text and return model name used.
+        
+        Returns:
+            Tuple of (response, model_name)
+        """
+        model = self._sample_model()
+        response = await model.generate_with_context(system_message, messages, **kwargs)
+        model_name = getattr(model, 'model', getattr(model, 'name', 'unknown'))
+        return response, model_name
+
     def _sample_model(self) -> LLMInterface:
         """Sample a model from the ensemble based on weights"""
         index = self.random_state.choices(range(len(self.models)), weights=self.weights, k=1)[0]

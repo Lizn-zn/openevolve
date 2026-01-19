@@ -38,8 +38,13 @@ class ReviseConfig:
     lean_server: LeanServerConfig = field(default_factory=LeanServerConfig)
     use_llm: bool = True
     llm: LLMConfig = field(default_factory=LLMConfig)
-    max_retries: int = 1
-    fallback_to_sorry: bool = True
+    
+    # 修复策略配置
+    # Pipeline: Fix -> Eliminate -> Sorry硬替换
+    fix_max_retries: int = 2          # Fix 策略的重试次数（尝试真正修复，不用 sorry）
+    eliminate_max_retries: int = 1    # Eliminate 策略的重试次数（用 sorry 消除错误）
+    fallback_to_sorry: bool = True    # 最后回退到 sorry 硬替换
+    
     debug: bool = False
     
     @classmethod
@@ -81,7 +86,8 @@ class ReviseConfig:
             lean_server=lean_config,
             use_llm=data.get('use_llm', True),
             llm=llm_config,
-            max_retries=data.get('max_retries', 1),
+            fix_max_retries=data.get('fix_max_retries', 2),
+            eliminate_max_retries=data.get('eliminate_max_retries', 1),
             fallback_to_sorry=data.get('fallback_to_sorry', True),
             debug=data.get('debug', False),
         )
@@ -108,4 +114,3 @@ def reload_config() -> ReviseConfig:
     global _config
     _config = None
     return get_config()
-

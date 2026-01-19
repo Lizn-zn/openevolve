@@ -232,9 +232,11 @@ class OpenEvolve:
         log_dir = self.config.log_dir or os.path.join(self.output_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
 
-        # Set up root logger
-        root_logger = logging.getLogger()
-        root_logger.setLevel(getattr(logging, self.config.log_level))
+        # Only configure the openevolve namespace logger (not root logger)
+        # This avoids capturing third-party library logs (e.g., Azure SDK)
+        project_logger = logging.getLogger("openevolve")
+        project_logger.setLevel(getattr(logging, self.config.log_level))
+        project_logger.propagate = False  # Don't propagate to root logger
 
         # Add file handler
         log_file = os.path.join(log_dir, f"openevolve_{time.strftime('%Y%m%d_%H%M%S')}.log")
@@ -242,12 +244,12 @@ class OpenEvolve:
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         )
-        root_logger.addHandler(file_handler)
+        project_logger.addHandler(file_handler)
 
         # Add console handler
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        root_logger.addHandler(console_handler)
+        project_logger.addHandler(console_handler)
 
         logger.info(f"Logging to {log_file}")
 

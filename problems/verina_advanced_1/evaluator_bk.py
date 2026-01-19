@@ -16,10 +16,9 @@ Evaluator for Lean 4 theorem proving using Lean verification server.
     - 否则用 compute_reward 计算
 
 报告规则:
-- 第一遍有语法错误且 revise 成功: 报告 revised_code 的最难 unsolved goal，并传递 revised_code 进入演化
-- 第一遍有语法错误且 revise 失败: 报告语法错误
+- 第一遍有语法错误: 报告语法错误
 - 第一遍无语法错误: 报告 sorries
-- revise 成功时，revised_code 会进入演化（传递给 iteration.py）
+- revise 结果只用于打分，不用于报告
 """
 
 import re
@@ -710,23 +709,19 @@ def evaluate(program_path: str) -> EvaluationResult:
             # 检查是否完全成功（无 sorry）
             if scoring_is_valid_no_sorry:
                 # 完全成功，无 sorry
-                success_artifacts = {
-                    "message": "Proof complete! No sorry found.",
-                    "status": "prove_no_sorry",
-                }
-                # 如果是 revise 后才成功的，传递 revised_code
-                if revised and scoring_code != original_code:
-                    success_artifacts["revised_code"] = scoring_code
                 return EvaluationResult(
                     metrics={
                         "combined_score": 1.0,
-                        "error_score": 0.1,  # 完全成功时 error_score 也给满分
-                        "node_score": 0.9,  # 满分（与 compute_node_score 的 weight 一致）
+                        "error_score": error_score,
+                        "node_score": 0.8,  # 满分
                         "error_count": float(first_error_count),
                         "has_sorry": 0.0,
                         "has_counterexample": 0.0,
                     },
-                    artifacts=success_artifacts,
+                    artifacts={
+                        "message": "Proof complete! No sorry found.",
+                        "status": "prove_no_sorry",
+                    },
                 )
             
             # 有 sorry，计算 node_score
@@ -735,10 +730,6 @@ def evaluate(program_path: str) -> EvaluationResult:
                 lemma_ncs = get_node_counts(scoring_code)
             except CounterexampleFound as e:
                 print(f"[Score] Counterexample found: {e.messages}")
-                counterexample_artifacts = {"status": "counterexample_found", "counterexample": e.messages}
-                # 如果是 revise 后的代码，传递 revised_code
-                if revised and scoring_code != original_code:
-                    counterexample_artifacts["revised_code"] = scoring_code
                 return EvaluationResult(
                     metrics={
                         "combined_score": 0.0,
@@ -749,7 +740,7 @@ def evaluate(program_path: str) -> EvaluationResult:
                         "is_revised": 1.0 if revised else 0.0,
                         "has_counterexample": 1.0,
                     },
-                    artifacts=counterexample_artifacts,
+                    artifacts={"status": "counterexample_found", "counterexample": e.messages},
                 )
             print(f"[Score] theorem_nc={theorem_nc}, lemma_ncs={lemma_ncs}")
             
@@ -760,19 +751,17 @@ def evaluate(program_path: str) -> EvaluationResult:
         combined_score = error_score + node_score
         
         # ===== 构建 artifacts =====
-        # 进化使用原始代码，revised_code 只用于评分
-        # artifacts 报告：原始程序的 error message + revised_code 的 unsolved_goals
+        # revise 成功时，artifacts 和无语法错误时一样，只是额外传递 revised_code 供 iteration.py 使用
         is_revised = revised and scoring_is_valid_with_sorry
         
         if is_revised:
             # revise 成功，报告 revise 后代码的 unsolved_goals（就像没有语法错误一样）
-            # 将 revised_code 传递给 process_parallel.py，让演化使用修复后的代码
             scoring_unsolved_goals = extract_unsolved_goals(scoring_result)
             hardest_goal_str = get_hardest_unsolved_goal(scoring_unsolved_goals, lemma_ncs)
             artifacts = {
                 "status": "prove_with_sorry",
                 "unsolved_goals": hardest_goal_str,
-                "revised_code": scoring_code,  # 供 iteration.py 保存到 database，进入演化
+                "revised_code": scoring_code,  # 供 iteration.py 保存到 database
             }
         elif report_compile_errors_str:
             # 第一遍有语法错误，revise 失败

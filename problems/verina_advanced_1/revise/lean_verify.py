@@ -11,7 +11,7 @@ import requests
 
 from .config import get_config, ReviseConfig
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("openevolve.revise.verify")
 
 
 def verify_lean_code(

@@ -1,0 +1,179 @@
+# Configuration for Lean 4 theorem proving evolution - Stage 2 (Complete Proof)
+max_iterations: 50
+checkpoint_interval: 10
+log_level: "INFO"
+
+# Early stopping settings
+# early_stopping_patience: 100
+# convergence_threshold: 0.001
+# early_stopping_metric: "combined_score"
+
+# Lean language configuration
+language: "lean"
+file_suffix: ".lean"
+
+# LLM configuration
+llm:
+  models:
+    # Azure GPT-5.1
+    - name: "azure-gpt-5.1"
+      weight: 0.3
+      api_base: "https://ai4mtest3.openai.azure.com/"
+      use_azure_ad: true
+      managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+      api_version: "2025-01-01-preview"
+    
+    # Azure GPT-5.2 (另一个 endpoint)
+    - name: "azure-gpt-5.2"
+      weight: 0.7
+      api_base: "https://ai4mtest3.openai.azure.com/"
+      use_azure_ad: true
+      managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+      api_version: "2025-01-01-preview"
+    
+    # OpenRouter 模型
+    # - name: "anthropic/claude-sonnet-4.5"
+    #   weight: 0.05
+    #   api_base: "https://openrouter.ai/api/v1"
+    #   api_key: ${OPENROUTER_API_KEY}
+    
+    # - name : "google/gemini-3-pro-preview"
+    #   weight: 0.05
+    #   api_base: "https://openrouter.ai/api/v1"
+    #   api_key: ${OPENROUTER_API_KEY}
+
+  # Inference parameters
+  temperature: 0.7
+  max_tokens: 65536
+  timeout: 1800
+  
+  # Reasoning model parameters
+  # reasoning_effort: medium
+
+# Prompt configuration
+prompt:
+  # Custom template directory
+  template_dir: "problems/verina_advanced_1/prompts"
+  
+  # Disable "code too long" simplification suggestion
+  suggest_simplification_after_chars: null
+  
+  # System message aligned with Complete Proof strategy - NO sorry allowed!
+  system_message: |
+    You are an expert in Lean 4 theorem proving. Your task is to FULLY PROVE the hardest unsolved goal.
+
+    ### How to Read the Goal
+    Look at `unsolved_goals` above. It shows the **hardest goal** that needs work:
+    - `[Hardest goal, complexity=N] line X: ⊢ <goal_type>`
+    - **Your task: COMPLETELY CLOSE this goal without using `sorry`**
+    
+    ### Scoring (Fitness function) Mechanism
+    - Score improves when you REMOVE a `sorry` by completing its proof
+    - A completed proof (no sorry) gets the highest score for that goal
+    - **IMPORTANT**: 
+      - In this stage, your goal is to ELIMINATE sorry, not to add new ones
+      - Try automation tactics (`grind`, `aesop`, `simp +decide`, `omega`) aggressively
+      - If you cannot complete the proof, keep the original code unchanged rather than breaking it
+    
+    ## Output Format
+    - Please conduct thoughtful reasoning before you output the code, and output the reasoning in a markdown block.
+    - Wrap all code in ```lean blocks
+    - ONLY modify code between `-- EVOLVE-BLOCK-START` and `-- EVOLVE-BLOCK-END`
+    - Avoid universe polymorphism issues
+
+  # Enable template stochasticity
+  use_template_stochasticity: true
+  
+  # Only Complete Proof strategy
+  template_variation_weights:
+    prove: [1.0]
+  
+  template_variations:
+    prove:
+      # ========== Strategy: Complete Proof (Close the Sorry - NO sorry allowed!) ==========
+      - |
+        ## Strategy: Complete Proof — Close the Hardest Sorry (NO sorry allowed!)
+        
+        **Goal: Try to FULLY PROVE the hardest sorry. Do NOT use sorry in your solution.**
+        
+        ### Why Completion Works
+        - Once you fully prove the hardest sorry, it's REMOVED from the complexity list
+        - Even if other sorries still exist, you've made REAL progress
+        - Completing a complexity-98 sorry is better than splitting it into two 60s!
+
+        ### IMPORTANT RULES
+        1. **NO `sorry` allowed** — Your goal is to close the proof completely
+        2. We can trust the Lean 4 compiler, so `simp +decide [...]` is better than `simp [...]`
+        3. The automation tactics `grind` and `aesop` are powerful, try them aggressively!
+        4. Use `omega` for arithmetic goals, `decide` for decidable propositions
+        5. If a direct proof is too hard, try `by_cases` to split into simpler cases
+        
+        ### Recommended Tactics (try in order)
+        ```lean
+        grind                                    -- most powerful, try first!
+        aesop                                    -- general automation
+        simp +decide [relevant_lemmas]           -- simplification with decidability
+        omega                                    -- linear arithmetic
+        decide                                   -- decidable propositions
+        by_cases h : condition <;> simp_all     -- case split
+        induction x with ... <;> simp_all       -- induction with auto finish
+        ```
+        
+        ### Example: Completing a Sorry
+        ```lean
+        -- Before: has sorry
+        lemma filterlist_length_eq_count_cons
+            (x y : Int) (ys : List Int)
+            (ih : (filterlist x ys).length = ys.count x) :
+            (filterlist x (y :: ys)).length = (y :: ys).count x := by
+          unfold filterlist
+          simp [List.count_cons, ih, filterlist]
+          sorry  -- ❌ We want to remove this!
+        
+        -- After: completed proof
+        lemma filterlist_length_eq_count_cons
+            (x y : Int) (ys : List Int)
+            (ih : (filterlist x ys).length = ys.count x) :
+            (filterlist x (y :: ys)).length = (y :: ys).count x := by
+          unfold filterlist
+          simp only [List.count_cons]
+          by_cases h : y = x
+          · simp [h, filterlist.aux, ih]
+          · simp [h, filterlist.aux, ih]
+        -- ✅ No sorry, proof complete!
+        ```
+
+  # Include compilation error feedback
+  include_artifacts: true
+  max_artifact_bytes: 16384
+
+  num_top_programs: 0
+  num_diverse_programs: 0
+
+# Database configuration
+database:
+  population_size: 50
+  archive_size: 30
+  num_islands: 4
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.1
+  exploitation_ratio: 0.7
+
+  # similarity_threshold: 0.99
+  # embedding_model: "openrouter-openai/text-embedding-3-small"
+
+
+# Evaluator configuration
+evaluator:
+  timeout: 1800  # Lean compilation may take longer
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+# Evolution settings
+diff_based_evolution: true  # Use diff mode for more precise proof modifications
+max_code_length: 100000
+
+# Re-evaluation settings (for re-evaluating after updating scoring function)
+# re_evaluate_on_load: true   # Re-evaluate when loading checkpoint
+# re_evaluate_best_only: false  # false = re-evaluate all programs
+

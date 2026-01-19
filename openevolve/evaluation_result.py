@@ -19,6 +19,11 @@ class EvaluationResult:
     scores (e.g., actual counts, percentages, continuous measurements), NOT pre-computed
     bin indices. The database handles all binning internally using min-max scaling.
 
+    Artifact Naming Convention:
+        - Artifacts with keys starting with '_' are saved to checkpoint but NOT sent to LLM.
+        - Use this for detailed logs, debug output, or large data you want to preserve.
+        - Example: {"status": "error", "_compile_log": "...(long output)...", "_stderr": "..."}
+
     Examples:
         ✅ Correct: {"combined_score": 0.85, "prompt_length": 1247, "execution_time": 0.234}
         ❌ Wrong:   {"combined_score": 0.85, "prompt_length": 7, "execution_time": 3}

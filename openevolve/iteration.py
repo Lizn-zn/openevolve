@@ -90,8 +90,8 @@ async def run_iteration_with_shared_db(
         result = Result(parent=parent)
         iteration_start = time.time()
 
-        # Generate code modification
-        llm_response = await llm_ensemble.generate_with_context(
+        # Generate code modification (also get model name for logging)
+        llm_response, model_name = await llm_ensemble.generate_with_context_and_model(
             system_message=prompt["system"],
             messages=[{"role": "user", "content": prompt["user"]}],
         )
@@ -163,6 +163,7 @@ async def run_iteration_with_shared_db(
             metadata={
                 "changes": changes_summary,
                 "parent_metrics": parent.metrics,
+                "evolution_model": model_name,  # 保存使用的模型名称
             },
             prompts=(
                 {

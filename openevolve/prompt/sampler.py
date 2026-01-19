@@ -598,7 +598,8 @@ class PromptSampler:
         Render artifacts for prompt inclusion
 
         Args:
-            artifacts: Dictionary of artifact name to content
+            artifacts: Dictionary of artifact name to content.
+                       Artifacts with keys starting with '_' are skipped (saved only, not sent to LLM).
 
         Returns:
             Formatted string for prompt inclusion (empty string if no artifacts)
@@ -610,6 +611,10 @@ class PromptSampler:
 
         # Process all artifacts using .items()
         for key, value in artifacts.items():
+            # Skip artifacts starting with '_' - these are for saving only, not for LLM
+            if key.startswith("_"):
+                continue
+
             content = self._safe_decode_artifact(value)
             # Truncate if too long
             if len(content) > self.config.max_artifact_bytes:
