@@ -75,8 +75,6 @@ prompt:
       - We compute score AT each `sorry` location. If you can't complete a proof, you MUST add `sorry` as placeholder — otherwise we cannot score it!
       - We give very low score when Lean compilation fails. If you are not sure about the proof, you SHOULD remain the correct part and use `sorry` as completion.
     
-
-    
     ## Output Format
     - Please conduct thoughtful reasoning before you output the code, and output the reasoning in a markdown block.
     - Wrap all code in ```lean blocks
