@@ -193,13 +193,27 @@ class OpenAILLM(LLMInterface):
 
     async def _call_api(self, params: Dict[str, Any]) -> str:
         """Make the actual API call"""
-        # Use asyncio to run the blocking API call in a thread pool
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, lambda: self.client.chat.completions.create(**params)
-        )
-        # Logging of system prompt, user message and response content
-        logger = logging.getLogger(__name__)
-        logger.debug(f"API parameters: {params}")
-        logger.debug(f"API response: {response.choices[0].message.content}")
-        return response.choices[0].message.content
+        
+        # Codex 模型使用 Responses API
+        if "codex" in params["model"].lower():
+            response = await loop.run_in_executor(
+                None, lambda: self.client.responses.create(
+                    model=params["model"],
+                    input=params["messages"][-1]["content"],
+                    instructions=params["messages"][0]["content"],
+                )
+            )
+            # 从 response.output 中提取文本
+            text = response.output[1].content[0].text
+            logger.debug(f"Responses API params: model={params['model']}")
+            logger.debug(f"Responses API response: {text}")
+            return text
+        else:
+            # 标准 Chat Completions API
+            response = await loop.run_in_executor(
+                None, lambda: self.client.chat.completions.create(**params)
+            )
+            logger.debug(f"API parameters: {params}")
+            logger.debug(f"API response: {response.choices[0].message.content}")
+            return response.choices[0].message.content

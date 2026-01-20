@@ -24,7 +24,7 @@ llm:
   model: "azure-gpt-5.2"
   temperature: 0.2        # 低温度保证稳定性
   max_tokens: 8192
-  timeout: 120            # 秒
+  timeout: 300            # 秒
 
 # 修复策略配置
 # Pipeline: Fix -> Eliminate -> Sorry硬替换

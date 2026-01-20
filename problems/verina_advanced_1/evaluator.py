@@ -84,19 +84,39 @@ STANDARD_AXIOMS = {
 }
 
 
-def extract_node_scores(result: dict) -> list:
-    """从验证结果中提取节点数分数"""
-    node_scores = []
+def extract_consts_info(result: dict) -> tuple[list[int], list[list[str]]]:
+    """从验证结果中提取常量计数信息
+    
+    新的 countNodesAll 输出格式:
+    CONSTS_COUNT: 90
+    CONSTS_JSON: ["Decidable.isTrue", ...]
+    
+    Returns:
+        tuple: (consts_counts, consts_jsons)
+            - consts_counts: 常量数量列表
+            - consts_jsons: 常量名称列表的列表
+    """
+    consts_counts = []
+    consts_jsons = []
     if 'response' in result and 'response' in result['response']:
         messages = result['response']['response'].get('messages', [])
         for msg in messages:
             if msg.get('severity') == 'info' and 'data' in msg:
                 data = msg['data']
-                match = re.search(r'Total nodes \(goal \+ hypotheses\): (\d+) //', data)
-                if match:
-                    node_count = int(match.group(1))
-                    node_scores.append(node_count)
-    return node_scores
+                # 新格式: CONSTS_COUNT 和 CONSTS_JSON
+                count_match = re.search(r'CONSTS_COUNT:\s*(\d+)', data)
+                json_match = re.search(r'CONSTS_JSON:\s*(\[.*\])', data)
+                if count_match:
+                    consts_counts.append(int(count_match.group(1)))
+                    consts_json = []
+                    if json_match:
+                        try:
+                            import json
+                            consts_json = json.loads(json_match.group(1))
+                        except json.JSONDecodeError:
+                            pass
+                    consts_jsons.append(consts_json)
+    return consts_counts, consts_jsons
 
 
 def extract_axioms_from_result(result: dict) -> list:
@@ -314,15 +334,24 @@ class CounterexampleFound(Exception):
         super().__init__(f"Counterexample found: {messages}")
 
 
-def get_node_counts(code: str) -> list:
+class CompilerError(Exception):
+    """编译错误异常，用于 countNodesAll 计算时的编译失败"""
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(f"Compiler error: {message}")
+
+
+def get_consts_counts(code: str) -> tuple[list[int], list[list[str]]]:
     """
-    获取代码中所有 sorry 目标的节点数列表
+    获取代码中所有 sorry 目标的常量数量列表
     
     将 sorry 替换为 countNodesAll; quickcheck 策略，发送到 Lean 服务器验证，
-    提取返回的所有节点数。
+    提取返回的所有常量计数。
     
     Returns:
-        节点数列表（每个 sorry 对应一个）
+        tuple: (consts_counts, consts_jsons)
+            - consts_counts: 常量数量列表（每个 sorry 对应一个）
+            - consts_jsons: 常量名称列表的列表
     
     Raises:
         CounterexampleFound: 如果 quickcheck 发现反例
@@ -332,10 +361,12 @@ def get_node_counts(code: str) -> list:
                            .replace("admit", "countNodesAll; quickcheck")
     
     result = verify_lean_code(score_code)
+    if result.get("error"):
+        raise CompilerError(result.get("error"))
     error_info = result.get("error_message", (False, []))
     if error_info[0]:
         raise CounterexampleFound(error_info[1])
-    return extract_node_scores(result)
+    return extract_consts_info(result)
 
 
 # 缓存 initial_program 的节点数
@@ -360,14 +391,14 @@ def get_theorem_node_count() -> int:
     with open(initial_program_path, "r") as f:
         initial_code = f.read()
     
-    node_counts = get_node_counts(initial_code)
+    consts_counts, _ = get_consts_counts(initial_code)
     
-    if node_counts:
-        _INITIAL_PROGRAM_NODE_COUNT = max(node_counts)
-        print(f"[NodeCount] Theorem node count from initial_program: {_INITIAL_PROGRAM_NODE_COUNT}")
+    if consts_counts:
+        _INITIAL_PROGRAM_NODE_COUNT = max(consts_counts)
+        print(f"[ConstsCount] Theorem consts count from initial_program: {_INITIAL_PROGRAM_NODE_COUNT}")
     else:
         _INITIAL_PROGRAM_NODE_COUNT = 0
-        print("[Warning] Could not get theorem node count from initial_program")
+        print("[Warning] Could not get theorem consts count from initial_program")
     
     return _INITIAL_PROGRAM_NODE_COUNT
 
@@ -681,6 +712,7 @@ def evaluate(program_path: str) -> EvaluationResult:
         node_score = 0.0
         theorem_nc = 0
         lemma_ncs = []
+        lemma_consts_jsons = []
         
         if scoring_is_valid_with_sorry:
             # revise 后编译成功，可以计算 node_score
@@ -698,6 +730,7 @@ def evaluate(program_path: str) -> EvaluationResult:
                             "error_count": float(first_error_count),
                             "is_cheating": 1.0,
                             "has_counterexample": 0.0,
+                            "has_compiler_error": 0.0,
                         },
                         artifacts={
                             "error": f"Cheating detected: {cheating_error}",
@@ -725,6 +758,7 @@ def evaluate(program_path: str) -> EvaluationResult:
                         "error_count": float(first_error_count),
                         "has_sorry": 0.0,
                         "has_counterexample": 0.0,
+                        "has_compiler_error": 0.0,
                     },
                     artifacts=success_artifacts,
                 )
@@ -732,7 +766,7 @@ def evaluate(program_path: str) -> EvaluationResult:
             # 有 sorry，计算 node_score
             theorem_nc = get_theorem_node_count()
             try:
-                lemma_ncs = get_node_counts(scoring_code)
+                lemma_ncs, lemma_consts_jsons = get_consts_counts(scoring_code)
             except CounterexampleFound as e:
                 print(f"[Score] Counterexample found: {e.messages}")
                 counterexample_artifacts = {"status": "counterexample_found", "counterexample": e.messages}
@@ -748,8 +782,27 @@ def evaluate(program_path: str) -> EvaluationResult:
                         "has_sorry": 1.0,
                         "is_revised": 1.0 if revised else 0.0,
                         "has_counterexample": 1.0,
+                        "has_compiler_error": 0.0,
                     },
                     artifacts=counterexample_artifacts,
+                )
+            except CompilerError as e:
+                print(f"[Score] Compiler error in countNodesAll: {e.message}")
+                compiler_error_artifacts = {"status": "compiler_error", "error": e.message}
+                if revised and scoring_code != original_code:
+                    compiler_error_artifacts["revised_code"] = scoring_code
+                return EvaluationResult(
+                    metrics={
+                        "combined_score": 0.0,
+                        "error_score": error_score,
+                        "node_score": 0.0,
+                        "error_count": float(first_error_count),
+                        "has_sorry": 1.0,
+                        "is_revised": 1.0 if revised else 0.0,
+                        "has_counterexample": 0.0,
+                        "has_compiler_error": 1.0,
+                    },
+                    artifacts=compiler_error_artifacts,
                 )
             print(f"[Score] theorem_nc={theorem_nc}, lemma_ncs={lemma_ncs}")
             
@@ -844,6 +897,7 @@ def evaluate(program_path: str) -> EvaluationResult:
                 "has_sorry": 1.0 if not scoring_is_valid_no_sorry else 0.0,
                 "is_revised": 1.0 if is_revised else 0.0,
                 "has_counterexample": 0.0,
+                "has_compiler_error": 0.0,
                 "theorem_node_count": float(theorem_nc),
                 "max_lemma_node_count": float(max(lemma_ncs)) if lemma_ncs else 0.0,
                 "num_sorries": float(len(lemma_ncs)),
@@ -854,12 +908,12 @@ def evaluate(program_path: str) -> EvaluationResult:
         
     except FileNotFoundError:
         return EvaluationResult(
-            metrics={"combined_score": 0.0},
+            metrics={"combined_score": 0.0, "has_compiler_error": 0.0},
             artifacts={"error": f"File not found: {program_path}"},
         )
     except Exception as e:
         return EvaluationResult(
-            metrics={"combined_score": 0.0},
+            metrics={"combined_score": 0.0, "has_compiler_error": 0.0},
             artifacts={"error": f"Evaluation error: {str(e)}", "type": type(e).__name__},
         )
 

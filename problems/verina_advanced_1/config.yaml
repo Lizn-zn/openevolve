@@ -1,5 +1,5 @@
-# Configuration for Lean 4 theorem proving evolution
-max_iterations: 50
+# Configuration for Lean 4 theorem proving evolution - Stage 1 (Decomposition & Simplification)
+max_iterations: 500
 checkpoint_interval: 10
 log_level: "INFO"
 
@@ -21,24 +21,31 @@ llm:
       api_base: "https://ai4mtest3.openai.azure.com/"
       use_azure_ad: true
       managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
-      api_version: "2025-01-01-preview"
+      api_version: "2025-03-01-preview"
     
     # Azure GPT-5.2 (另一个 endpoint)
     - name: "azure-gpt-5.2"
-      weight: 0.4
+      weight: 0.3
       api_base: "https://ai4mtest3.openai.azure.com/"
       use_azure_ad: true
       managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
-      api_version: "2025-01-01-preview"
+      api_version: "2025-03-01-preview"
+
+    - name: "azure-gpt-5.2-codex"
+      weight: 0.1
+      api_base: "https://ai4mtest3.openai.azure.com/"
+      use_azure_ad: true
+      managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+      api_version: "2025-03-01-preview"
     
     # OpenRouter 模型
     # - name: "anthropic/claude-sonnet-4.5"
-    #   weight: 0.0
+    #   weight: 0.05
     #   api_base: "https://openrouter.ai/api/v1"
     #   api_key: ${OPENROUTER_API_KEY}
     
     # - name : "google/gemini-3-pro-preview"
-    #   weight: 0.0
+    #   weight: 0.05
     #   api_base: "https://openrouter.ai/api/v1"
     #   api_key: ${OPENROUTER_API_KEY}
 
@@ -64,18 +71,13 @@ prompt:
     ### How to Read the Goal
     Look at `unsolved_goals` above. It shows the **hardest goal** that needs work:
     - `[Hardest goal, complexity=N] line X: ⊢ <goal_type>`
-    - **Your task: reduce this complexity by decomposition or simplification**
+    - **Your task: reduce this complexity by decomposition or completion
     
     ### Scoring (Fitness function) Mechanism
     - Score depends on the **maximum complexity** among all `sorry` goals, Lower max complexity = Higher score
     - To improve: reduce the complexity of the hardest goal via
         (1) **decompose** into smaller lemmas (with cleaned hypothesis or simplified goal)
-        (2) or **simplify** and even **complete** the goal directly
-    - **IMPORTANT**: 
-      - We compute score AT each `sorry` location. If you can't complete a proof, you MUST add `sorry` as placeholder — otherwise we cannot score it!
-      - We give very low score when Lean compilation fails. If you are not sure about the proof, you SHOULD remain the correct part and use `sorry` as completion.
-    
-
+        (2) or **complete** the goal directly
     
     ## Output Format
     - Please conduct thoughtful reasoning before you output the code, and output the reasoning in a markdown block.
@@ -86,9 +88,9 @@ prompt:
   # Enable template stochasticity
   use_template_stochasticity: true
   
-  # Three proof strategies with weights
+  # Two proof strategies with weights (Decomposition & Simplification only)
   template_variation_weights:
-    prove: [0.0, 0.8, 0.2]
+    prove: [0.8, 0.2]
   
   template_variations:
     prove:
@@ -107,7 +109,6 @@ prompt:
         1. **Analyze the goal structure** — look for ∧, ∨, ∀, ∃, →, or recursive definitions
         2. **Create helper lemmas** — each handles a smaller part of the goal
         3. **Combine helpers** — use `exact`, `apply`, or `constructor` to complete the original
-        4. **Use `sorry` in helpers** — it's OK, each sorry will have lower complexity
         
         ### Common Patterns
         | Goal Pattern | Decomposition Strategy |
@@ -117,87 +118,63 @@ prompt:
         | `P ∧ Q` | Split into two lemmas, use `constructor` |
         | `∀ x, P x → Q x` | Use `intro x hP`, then prove `Q x` |
         
-        ### Example: Splitting a Complex Goal
+        ### Example: Splitting by Induction
         ```lean
-        -- Before: complexity=98
-        lemma hard_goal : (filterlist x nums).length = nums.count x := by sorry
+        -- Before: complexity=90
+        lemma reverse_length (xs : List α) : xs.reverse.length = xs.length := by sorry
         
-        -- After: two smaller goals
-        lemma base_case : (filterlist x []).length = [].count x := by sorry  -- complexity ~30
-        lemma ind_step (y : Int) (ys : List Int) (ih : ...) : ... := by sorry  -- complexity ~50
-        lemma hard_goal : (filterlist x nums).length = nums.count x := by
-          induction nums with
-          | nil => exact base_case
-          | cons y ys ih => exact ind_step y ys ih
-        ```
-        
-        ### Syntax Reminder
-        ```lean
-        lemma lemmaX (args) : <goal_type> := by
-          <tactics>
-          sorry  -- Each sorry has lower complexity than the original
+        -- After: split into base case + inductive step, each with lower complexity
+        lemma reverse_length_nil : ([] : List α).reverse.length = [].length := by sorry  -- complexity ~20
+        lemma reverse_length_cons (x : α) (xs : List α) 
+            (ih : xs.reverse.length = xs.length) : 
+            (x :: xs).reverse.length = (x :: xs).length := by sorry  -- complexity ~40
+        lemma reverse_length (xs : List α) : xs.reverse.length = xs.length := by
+          induction xs with
+          | nil => exact reverse_length_nil
+          | cons x xs ih => exact reverse_length_cons x xs ih
         ```
 
 
-      # ========== Strategy 2: Simplification (Apply Tactics Directly, NO new lemmas) ==========
+      # ========== Strategy 2: Completion (Apply Tactics Directly, NO new lemmas) ==========
       - |
-        ## Strategy: Simplification — Apply Tactics Directly (DO NOT create new lemmas)
+        ## Strategy: Completion — Complete the Hardest Goal Directly
         
-        **Goal: Use automation tactics to simplify the hardest goal. **
+        **Goal: Use automation tactics to complete the hardest goal. **
 
-        ### Why Simplification Works
-        - Tactics like `simp`, `unfold`, `rw` can transform a complex goal into a simpler one
-        - After simplification, the remaining `sorry` has lower complexity
-        - Example: `simp [filterlist]` might reduce complexity from 98 to 60
-
-        ### Simplification Approach
-        - Try to simplify the goal using the following tactics:
-        ```lean
-        grind                         -- powerful automation, try first!
-        simp +decide [..]     -- simp with decidability
-        aesop                         -- general search
-        omega                         -- linear arithmetic
-        by_cases h : cond <;> simp +decide [*]  -- case split
-        split_ifs <;> simp_all +decide [..]    -- if-then-else
-        induction' xs with x xs ih <;> simp +decide [*]  -- induction
-        ```
-        - Use `try <tactics>; sorry` for uncertain steps (this will ensure the syntax to be correct)
-        
-        ### Example: Inline proof with automation
-        ```lean
-        -- GOOD: Use `have` with automation, no new lemma
-        have h : filterlist.aux x lst = List.filter (fun y => y = x) lst := by
-          induction' lst with y ys ih
-          · rfl
-          · by_cases hy : y = x <;> simp +decide [*, filterlist.aux]
-        
-        -- GOOD: Direct grind for list facts
-        have h : (List.filter (fun y => y = x) lst).length = List.count x lst := by grind
-        ```
-
-        ### Syntax Reminder
-        ```lean
-        lemma lemmaX (args) : <goal_type> := by
-          <tactics>
-          sorry  -- Each sorry has lower complexity than the original
-        ```
-
-      # ========== Strategy 3: Complete Proof (Try to Close a Sorry) ==========
-      - |
-        ## Strategy: Complete Proof — Close the Hardest Sorry (NO sorry allowed!)
-        
-        **Goal: Try to FULLY PROVE the hardest sorry.**
-        
         ### Why Completion Works
         - Once you fully prove the hardest sorry, it's REMOVED from the complexity list
         - Even if other sorries still exist, you've made REAL progress
-        - Completing a complexity-98 sorry is better than splitting it into two 60s!
+        - Score improves because `max(complexity)` is handled!
 
         ### IMPORTANT RULES
-        1. We can trust the Lean 4 compiler, so simp +decide [...] is better than simp [...]
-        2. The automation tactics grind and aesop are powerful, try them first in a safe way (wrapped by try ...; sorry)!
-        3. Carefully and Thoughtfully consider the proof, try to keep the proof steps completely correct.
+        1. We can trust the Lean 4 compiler, so `simp +decide [...]` is better than `simp [...]`
+        2. The automation tactics `grind` and `aesop` are powerful, try them aggressively!
+        3. Use `omega` for arithmetic goals, `decide` for decidable propositions
+        4. If a direct proof is too hard, try `by_cases` to split into simpler cases
         
+        ### Recommended Tactics (try in order)
+        ```lean
+        grind                                    -- most powerful, try first!
+        aesop                                    -- general automation
+        simp +decide [relevant_lemmas]           -- simplification with decidability
+        omega                                    -- linear arithmetic
+        decide                                   -- decidable propositions
+        by_cases h : condition <;> simp_all     -- case split
+        induction x with ... <;> simp_all       -- induction with auto finish
+        ```
+        
+        ### Example: Completing with Induction
+        ```lean
+        -- Before: has sorry
+        lemma sum_zero (xs : List Nat) : (xs.map (· * 0)).sum = 0 := by sorry
+        
+        -- After: induction with simp_all finishes each case
+        lemma sum_zero (xs : List Nat) : (xs.map (· * 0)).sum = 0 := by
+          induction xs with
+          | nil => simp
+          | cons x xs ih => simp_all
+        ```
+
   # Include compilation error feedback
   include_artifacts: true
   max_artifact_bytes: 16384
@@ -220,7 +197,7 @@ database:
 
 # Evaluator configuration
 evaluator:
-  timeout: 120  # Lean compilation may take longer
+  timeout: 1800  # Lean compilation may take longer
   cascade_evaluation: false
   parallel_evaluations: 2
 
