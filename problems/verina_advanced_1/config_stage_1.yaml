@@ -191,6 +191,12 @@ database:
   exploration_ratio: 0.3
   exploitation_ratio: 0.5
 
+  # MAP-Elites feature dimensions
+  feature_dimensions: ["complexity", "diversity", "difference"]
+  feature_bins: 10
+  feature_scaling_per_dim:
+    difference: "percentile"
+
   # similarity_threshold: 0.99
   # embedding_model: "openrouter-openai/text-embedding-3-small"
 

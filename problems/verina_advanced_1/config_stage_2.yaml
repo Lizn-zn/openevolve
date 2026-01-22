@@ -31,12 +31,12 @@ llm:
       managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
       api_version: "2025-03-01-preview"
 
-    - name: "azure-gpt-5.2-codex"
-      weight: 0.1
-      api_base: "https://ai4mtest3.openai.azure.com/"
-      use_azure_ad: true
-      managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
-      api_version: "2025-03-01-preview"
+    # - name: "azure-gpt-5.2-codex"
+    #   weight: 0.1
+    #   api_base: "https://ai4mtest3.openai.azure.com/"
+    #   use_azure_ad: true
+    #   managed_identity_client_id: "7e0d39de-9cb1-4585-85af-1e82ea00b36d"
+    #   api_version: "2025-03-01-preview"
     
     # OpenRouter 模型
     # - name: "anthropic/claude-sonnet-4.5"
@@ -90,7 +90,7 @@ prompt:
   
   # Two proof strategies with weights (Decomposition & Simplification only)
   template_variation_weights:
-    prove: [0.8, 0.2]
+    prove: [0.2, 0.8]
   
   template_variations:
     prove:
@@ -190,6 +190,12 @@ database:
   elite_selection_ratio: 0.2
   exploration_ratio: 0.1
   exploitation_ratio: 0.7
+
+  # MAP-Elites feature dimensions
+  feature_dimensions: ["complexity", "diversity", "difference"]
+  feature_bins: 10
+  feature_scaling_per_dim:
+    difference: "percentile"
 
   # similarity_threshold: 0.99
   # embedding_model: "openrouter-openai/text-embedding-3-small"

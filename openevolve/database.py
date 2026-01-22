@@ -85,6 +85,9 @@ class Program:
     # Embedding vector for novelty rejection sampling
     embedding: Optional[List[float]] = None
 
+    # AST node information for difference calculation in MAP-Elites
+    ast_nodes: Optional[List[List[str]]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation"""
         return asdict(self)
@@ -189,9 +192,20 @@ class ProgramDatabase:
         )  # Reference program codes for consistent diversity
         self.diversity_reference_size: int = getattr(config, "diversity_reference_size", 20)
 
+        # Difference caching infrastructure (based on consts_jsons from artifacts)
+        self.difference_cache: Dict[int, Dict[str, Union[float, float]]] = (
+            {}
+        )  # hash -> {"value": float, "timestamp": float}
+        self.difference_cache_size: int = 1000  # LRU cache size
+        self.difference_reference_set: List[List[List[str]]] = (
+            []
+        )  # Reference consts_jsons for consistent difference calculation
+        self.difference_reference_size: int = getattr(config, "difference_reference_size", 20)
+
         # Feature scaling infrastructure
         self.feature_stats: Dict[str, Dict[str, Union[float, float, List[float]]]] = {}
         self.feature_scaling_method: str = "minmax"  # Options: minmax, zscore, percentile
+        self.feature_scaling_per_dim: Dict[str, str] = getattr(config, "feature_scaling_per_dim", {})
 
         # Per-dimension bins support
         if hasattr(config, "feature_bins") and isinstance(config.feature_bins, dict):
@@ -893,6 +907,14 @@ class ProgramDatabase:
                     diversity = self._get_cached_diversity(program)
                     bin_idx = self._calculate_diversity_bin(diversity)
                 coords.append(bin_idx)
+            elif dim == "difference":
+                # Use cached difference calculation based on consts_jsons from artifacts
+                if len(self.programs) < 2:
+                    bin_idx = 0
+                else:
+                    difference = self._get_cached_difference(program)
+                    bin_idx = self._calculate_difference_bin(difference)
+                coords.append(bin_idx)
             elif dim == "score":
                 # Use average of numeric metrics
                 if not program.metrics:
@@ -970,6 +992,58 @@ class ProgramDatabase:
 
         # Convert to bin index
         bin_idx = int(scaled_value * num_bins)
+
+        # Ensure bin index is within valid range
+        bin_idx = max(0, min(num_bins - 1, bin_idx))
+
+        return bin_idx
+
+    def _calculate_difference_bin(self, difference: float) -> int:
+        """
+        Calculate the bin index for a given difference value using adaptive scaling.
+
+        Since Chamfer Distance values are typically very small (0.01-0.25) due to
+        shared standard library constants, we use the observed min/max range to
+        scale values across all bins effectively.
+
+        Args:
+            difference: The Chamfer distance to reference programs (0-1)
+
+        Returns:
+            Bin index in range [0, self.feature_bins - 1]
+        """
+        # Update feature statistics for monitoring
+        self._update_feature_stats("difference", difference)
+
+        # Get number of bins for this dimension
+        num_bins = self.feature_bins_per_dim.get("difference", self.feature_bins)
+
+        # Get observed min/max from stats
+        stats = self.feature_stats.get("difference", {})
+        observed_min = stats.get("min", 0.0)
+        observed_max = stats.get("max", 1.0)
+        
+        # Add some padding to observed range for new values
+        # (allow 20% expansion on each side)
+        range_size = observed_max - observed_min
+        if range_size < 0.001:
+            # Not enough variance yet, use a fixed small range for spreading
+            # Typical Chamfer distances: 0.0 - 0.3
+            observed_min = 0.0
+            observed_max = 0.3
+            range_size = 0.3
+        
+        # Scale the difference to [0, 1] based on observed range
+        # This ensures we use all bins regardless of the actual value range
+        if difference <= observed_min:
+            scaled = 0.0
+        elif difference >= observed_max:
+            scaled = 1.0
+        else:
+            scaled = (difference - observed_min) / range_size
+        
+        # Convert to bin index
+        bin_idx = int(scaled * num_bins)
 
         # Ensure bin index is within valid range
         bin_idx = max(0, min(num_bins - 1, bin_idx))
@@ -2336,6 +2410,201 @@ class ProgramDatabase:
         self.diversity_reference_set = []
         logger.debug("Diversity cache invalidated")
 
+    # ===== Difference calculation functions (based on consts_jsons from artifacts) =====
+
+    def _get_consts_jsons_from_program(self, program: Program) -> List[List[str]]:
+        """
+        Get consts_jsons from program's ast_nodes field.
+
+        Args:
+            program: Program to get consts_jsons from
+
+        Returns:
+            List of consts_json lists (one per sorry), or empty list if not available
+        """
+        return program.ast_nodes or []
+
+    def _calculate_consts_difference(
+        self, current: List[List[str]], reference: List[List[str]]
+    ) -> float:
+        """
+        Calculate difference between two consts_jsons using Chamfer Distance.
+
+        Chamfer Distance naturally handles sets of different sizes by computing
+        the average nearest-neighbor distance in both directions.
+
+        Args:
+            current: Current program's consts_jsons (list of const lists, one per sorry)
+            reference: Reference program's consts_jsons
+
+        Returns:
+            Difference score in range [0, 1], where 0 = identical, 1 = completely different
+        """
+        # Handle empty cases
+        if not current and not reference:
+            return 0.0
+        if not current or not reference:
+            return 1.0
+
+        # Convert each sorry's consts to a set for Jaccard computation
+        current_sets = [set(consts) for consts in current]
+        reference_sets = [set(consts) for consts in reference]
+
+        # Jaccard distance between two sets
+        def jaccard_distance(set_a: set, set_b: set) -> float:
+            if not set_a and not set_b:
+                return 0.0
+            if not set_a or not set_b:
+                return 1.0
+            intersection = len(set_a & set_b)
+            union = len(set_a | set_b)
+            return 1.0 - (intersection / union if union > 0 else 0.0)
+
+        # Chamfer Distance: average of nearest-neighbor distances in both directions
+        # Direction 1: for each set in current, find nearest in reference
+        sum_current_to_ref = 0.0
+        for c_set in current_sets:
+            min_dist = min(jaccard_distance(c_set, r_set) for r_set in reference_sets)
+            sum_current_to_ref += min_dist
+        avg_current_to_ref = sum_current_to_ref / len(current_sets)
+
+        # Direction 2: for each set in reference, find nearest in current
+        sum_ref_to_current = 0.0
+        for r_set in reference_sets:
+            min_dist = min(jaccard_distance(r_set, c_set) for c_set in current_sets)
+            sum_ref_to_current += min_dist
+        avg_ref_to_current = sum_ref_to_current / len(reference_sets)
+
+        # Symmetric Chamfer Distance
+        chamfer_dist = (avg_current_to_ref + avg_ref_to_current) / 2.0
+
+        return chamfer_dist
+
+    def _get_cached_difference(self, program: Program) -> float:
+        """
+        Get difference score for a program using cache and reference set.
+
+        Args:
+            program: The program to calculate difference for
+
+        Returns:
+            Difference score (cached or newly computed)
+        """
+        # Get consts_jsons for current program
+        current_consts = self._get_consts_jsons_from_program(program)
+
+        # If no consts_jsons, return 0 (neutral difference)
+        if not current_consts:
+            return 0.0
+
+        # Create a hash from consts_jsons for caching
+        consts_hash = hash(str(current_consts))
+
+        # Check cache first
+        if consts_hash in self.difference_cache:
+            return self.difference_cache[consts_hash]["value"]
+
+        # Update reference set if needed
+        if (
+            not self.difference_reference_set
+            or len(self.difference_reference_set) < self.difference_reference_size
+        ):
+            self._update_difference_reference_set()
+
+        # Compute difference against reference set
+        difference_scores = []
+        for ref_consts in self.difference_reference_set:
+            if ref_consts != current_consts:  # Don't compare with itself
+                difference_scores.append(
+                    self._calculate_consts_difference(current_consts, ref_consts)
+                )
+
+        difference = (
+            sum(difference_scores) / max(1, len(difference_scores))
+            if difference_scores
+            else 0.0
+        )
+
+        # Cache the result with LRU eviction
+        self._cache_difference_value(consts_hash, difference)
+
+        return difference
+
+    def _update_difference_reference_set(self) -> None:
+        """Update the reference set for difference calculation based on consts_jsons"""
+        if len(self.programs) == 0:
+            return
+
+        # Collect programs with valid consts_jsons
+        programs_with_consts = []
+        for prog in self.programs.values():
+            consts = self._get_consts_jsons_from_program(prog)
+            if consts:
+                programs_with_consts.append((prog, consts))
+
+        if not programs_with_consts:
+            return
+
+        if len(programs_with_consts) <= self.difference_reference_size:
+            self.difference_reference_set = [consts for _, consts in programs_with_consts]
+        else:
+            # Select programs with maximum difference (greedy algorithm)
+            selected = []
+            remaining = programs_with_consts.copy()
+
+            # Start with a random program
+            first_idx = random.randint(0, len(remaining) - 1)
+            selected.append(remaining.pop(first_idx))
+
+            # Greedily add programs that maximize difference to selected set
+            while len(selected) < self.difference_reference_size and remaining:
+                max_difference = -1
+                best_idx = -1
+
+                for i, (_, candidate_consts) in enumerate(remaining):
+                    # Calculate minimum difference to selected programs
+                    min_diff = float("inf")
+                    for _, selected_consts in selected:
+                        diff = self._calculate_consts_difference(
+                            candidate_consts, selected_consts
+                        )
+                        min_diff = min(min_diff, diff)
+
+                    if min_diff > max_difference:
+                        max_difference = min_diff
+                        best_idx = i
+
+                if best_idx >= 0:
+                    selected.append(remaining.pop(best_idx))
+
+            self.difference_reference_set = [consts for _, consts in selected]
+
+        logger.debug(
+            f"Updated difference reference set with {len(self.difference_reference_set)} programs"
+        )
+
+    def _cache_difference_value(self, consts_hash: int, difference: float) -> None:
+        """Cache a difference value with LRU eviction"""
+        # Check if cache is full
+        if len(self.difference_cache) >= self.difference_cache_size:
+            # Remove oldest entry
+            oldest_hash = min(
+                self.difference_cache.items(), key=lambda x: x[1]["timestamp"]
+            )[0]
+            del self.difference_cache[oldest_hash]
+
+        # Add new entry
+        self.difference_cache[consts_hash] = {
+            "value": difference,
+            "timestamp": time.time(),
+        }
+
+    def _invalidate_difference_cache(self) -> None:
+        """Invalidate the difference cache when programs change significantly"""
+        self.difference_cache.clear()
+        self.difference_reference_set = []
+        logger.debug("Difference cache invalidated")
+
     def _update_feature_stats(self, feature_name: str, value: float) -> None:
         """
         Update statistics for a feature dimension
@@ -2376,8 +2645,13 @@ class ProgramDatabase:
             return min(1.0, max(0.0, value))
 
         stats = self.feature_stats[feature_name]
+        
+        # Check per-dimension scaling method first, then fall back to global
+        scaling_method = self.feature_scaling_per_dim.get(
+            feature_name, self.feature_scaling_method
+        )
 
-        if self.feature_scaling_method == "minmax":
+        if scaling_method == "minmax":
             # Min-max normalization to [0, 1]
             min_val = stats["min"]
             max_val = stats["max"]
@@ -2388,15 +2662,37 @@ class ProgramDatabase:
             scaled = (value - min_val) / (max_val - min_val)
             return min(1.0, max(0.0, scaled))  # Ensure in [0, 1]
 
-        elif self.feature_scaling_method == "percentile":
-            # Use percentile ranking
+        elif scaling_method == "percentile":
+            # Use robust percentile ranking (trimmed 10th-90th)
             values = stats["values"]
-            if not values:
-                return 0.5
+            if not values or len(values) < 5:
+                # Not enough samples, use minmax fallback
+                return self._scale_feature_value_minmax(feature_name, value)
 
-            # Count how many values are less than or equal to this value
-            count = sum(1 for v in values if v <= value)
-            percentile = count / len(values)
+            # Sort values and compute trimmed bounds (10th and 90th percentile)
+            sorted_vals = sorted(values)
+            n = len(sorted_vals)
+            p10_idx = max(0, int(n * 0.1))
+            p90_idx = min(n - 1, int(n * 0.9))
+            p10 = sorted_vals[p10_idx]
+            p90 = sorted_vals[p90_idx]
+
+            # If trimmed range is too small, fall back to full range
+            if p90 <= p10:
+                p10 = sorted_vals[0]
+                p90 = sorted_vals[-1]
+                if p90 <= p10:
+                    return 0.5
+
+            # Clamp value to trimmed range
+            clamped = max(p10, min(p90, value))
+
+            # Calculate percentile within trimmed range
+            trimmed_vals = [v for v in sorted_vals if p10 <= v <= p90]
+            if not trimmed_vals:
+                return 0.5
+            count = sum(1 for v in trimmed_vals if v <= clamped)
+            percentile = count / len(trimmed_vals)
             return percentile
 
         else:

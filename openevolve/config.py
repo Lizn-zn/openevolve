@@ -325,6 +325,9 @@ class DatabaseConfig:
         },
     )
     feature_bins: Union[int, Dict[str, int]] = 10  # Can be int (all dims) or dict (per-dim)
+    feature_scaling_per_dim: Dict[str, str] = field(
+        default_factory=dict  # Empty by default, user must explicitly configure
+    )
     diversity_reference_size: int = 20  # Size of reference set for diversity calculation
 
     # Migration parameters for island-based evolution

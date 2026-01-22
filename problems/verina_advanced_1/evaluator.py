@@ -87,35 +87,53 @@ STANDARD_AXIOMS = {
 def extract_consts_info(result: dict) -> tuple[list[int], list[list[str]]]:
     """从验证结果中提取常量计数信息
     
-    新的 countNodesAll 输出格式:
-    CONSTS_COUNT: 90
-    CONSTS_JSON: ["Decidable.isTrue", ...]
+    countNodesAll 输出两条独立的消息（相同位置）:
+    - CONSTS_COUNT: 90
+    - CONSTS_JSON: ["Decidable.isTrue", ...]
     
     Returns:
         tuple: (consts_counts, consts_jsons)
             - consts_counts: 常量数量列表
             - consts_jsons: 常量名称列表的列表
     """
+    import json as json_module
+    
     consts_counts = []
     consts_jsons = []
+    
     if 'response' in result and 'response' in result['response']:
         messages = result['response']['response'].get('messages', [])
+        
+        # 按位置分组收集 CONSTS_COUNT 和 CONSTS_JSON
+        # 位置键: (line, column)
+        count_by_pos: dict[tuple[int, int], int] = {}
+        json_by_pos: dict[tuple[int, int], list[str]] = {}
+        
         for msg in messages:
             if msg.get('severity') == 'info' and 'data' in msg:
                 data = msg['data']
-                # 新格式: CONSTS_COUNT 和 CONSTS_JSON
+                pos = msg.get('pos', {})
+                pos_key = (pos.get('line', 0), pos.get('column', 0))
+                
+                # 提取 CONSTS_COUNT
                 count_match = re.search(r'CONSTS_COUNT:\s*(\d+)', data)
-                json_match = re.search(r'CONSTS_JSON:\s*(\[.*\])', data)
                 if count_match:
-                    consts_counts.append(int(count_match.group(1)))
-                    consts_json = []
-                    if json_match:
-                        try:
-                            import json
-                            consts_json = json.loads(json_match.group(1))
-                        except json.JSONDecodeError:
-                            pass
-                    consts_jsons.append(consts_json)
+                    count_by_pos[pos_key] = int(count_match.group(1))
+                
+                # 提取 CONSTS_JSON
+                json_match = re.search(r'CONSTS_JSON:\s*(\[.*\])', data)
+                if json_match:
+                    try:
+                        json_by_pos[pos_key] = json_module.loads(json_match.group(1))
+                    except json_module.JSONDecodeError:
+                        json_by_pos[pos_key] = []
+        
+        # 按位置顺序配对结果
+        # 对于每个有 CONSTS_COUNT 的位置，查找对应的 CONSTS_JSON
+        for pos_key in sorted(count_by_pos.keys()):
+            consts_counts.append(count_by_pos[pos_key])
+            consts_jsons.append(json_by_pos.get(pos_key, []))
+    
     return consts_counts, consts_jsons
 
 
@@ -449,10 +467,9 @@ def compute_node_score(
     使用 LogSumExp 代替 max，让多个高复杂度目标产生更高的"有效复杂度"，
     从而区分"2个复杂度98的sorry"和"1个复杂度98的sorry"。
     
-    使用 sigmoid 映射，让中间进展更有区分度：
-    - 当 effective_max = theorem_node_count 时，分数接近 0
-    - 当 effective_max = 0 时，分数接近 weight
-    - 中间区域有更好的梯度
+    使用幂函数映射，让小的进展也能得到较合理的分数：
+    - power=0.3 时：reduction_ratio=0.1 → 0.50, 0.2 → 0.62, 0.5 → 0.81
+    - 这样即使节点只减少了 10-20%，也能得到 0.4-0.5 的权重分数
     
     Args:
         theorem_node_count: 原始定理的节点数
@@ -485,15 +502,18 @@ def compute_node_score(
     # 节点减少比例: 0 (无进展) 到 1 (完全解决)
     reduction_ratio = max(1 - effective_max / theorem_node_count, 0)
     
-    # Sigmoid 映射: 将 [0, 1] 映射到 [0, 1]，中间区域梯度更大
-    # 使用 sigmoid(k * (x - 0.5)) 并归一化到 [0, 1]
-    # k 控制曲线陡峭程度，k=6 时效果较好
-    k = 6
-    sigmoid_score = 1 / (1 + math.exp(-k * (reduction_ratio - 0.5)))
-    # 归一化：确保 reduction_ratio=0 时为 0，reduction_ratio=1 时为 1
-    sigmoid_min = 1 / (1 + math.exp(-k * (0 - 0.5)))
-    sigmoid_max = 1 / (1 + math.exp(-k * (1 - 0.5)))
-    normalized_score = (sigmoid_score - sigmoid_min) / (sigmoid_max - sigmoid_min)
+    # 幂函数映射: reduction_ratio ^ power
+    # power 越小，对小进展越"宽容"；power 越大，对小进展越"严格"
+    # 
+    # power=0.3 时：0.1 → 0.50, 0.2 → 0.62, 0.5 → 0.81 (宽容，鼓励小进展)
+    # power=0.5 时：0.1 → 0.32, 0.2 → 0.45, 0.5 → 0.71 (中等)
+    # power=1.0 时：0.1 → 0.10, 0.2 → 0.20, 0.5 → 0.50 (线性，无放大)
+    # power=2.0 时：0.1 → 0.01, 0.2 → 0.04, 0.5 → 0.25 (严格，惩罚小进展)
+    power = 0.5
+    if reduction_ratio > 0:
+        normalized_score = reduction_ratio ** power
+    else:
+        normalized_score = 0.0
     
     return weight * normalized_score
 
@@ -741,73 +761,58 @@ def evaluate(program_path: str) -> EvaluationResult:
                     )
             
             # 检查是否完全成功（无 sorry）
+            # 不提前 return，让成功分支也走到后面的 artifacts 收集逻辑
             if scoring_is_valid_no_sorry:
-                # 完全成功，无 sorry
-                success_artifacts = {
-                    "message": "Proof complete! No sorry found.",
-                    "status": "prove_no_sorry",
-                }
-                # 如果是 revise 后才成功的，传递 revised_code
-                if revised and scoring_code != original_code:
-                    success_artifacts["revised_code"] = scoring_code
-                return EvaluationResult(
-                    metrics={
-                        "combined_score": 1.0,
-                        "error_score": 0.1,  # 完全成功时 error_score 也给满分
-                        "node_score": 0.9,  # 满分（与 compute_node_score 的 weight 一致）
-                        "error_count": float(first_error_count),
-                        "has_sorry": 0.0,
-                        "has_counterexample": 0.0,
-                        "has_compiler_error": 0.0,
-                    },
-                    artifacts=success_artifacts,
-                )
-            
-            # 有 sorry，计算 node_score
-            theorem_nc = get_theorem_node_count()
-            try:
-                lemma_ncs, lemma_consts_jsons = get_consts_counts(scoring_code)
-            except CounterexampleFound as e:
-                print(f"[Score] Counterexample found: {e.messages}")
-                counterexample_artifacts = {"status": "counterexample_found", "counterexample": e.messages}
-                # 如果是 revise 后的代码，传递 revised_code
-                if revised and scoring_code != original_code:
-                    counterexample_artifacts["revised_code"] = scoring_code
-                return EvaluationResult(
-                    metrics={
-                        "combined_score": 0.0,
-                        "error_score": error_score,
-                        "node_score": 0.0,
-                        "error_count": float(first_error_count),
-                        "has_sorry": 1.0,
-                        "is_revised": 1.0 if revised else 0.0,
-                        "has_counterexample": 1.0,
-                        "has_compiler_error": 0.0,
-                    },
-                    artifacts=counterexample_artifacts,
-                )
-            except CompilerError as e:
-                print(f"[Score] Compiler error in countNodesAll: {e.message}")
-                compiler_error_artifacts = {"status": "compiler_error", "error": e.message}
-                if revised and scoring_code != original_code:
-                    compiler_error_artifacts["revised_code"] = scoring_code
-                return EvaluationResult(
-                    metrics={
-                        "combined_score": 0.0,
-                        "error_score": error_score,
-                        "node_score": 0.0,
-                        "error_count": float(first_error_count),
-                        "has_sorry": 1.0,
-                        "is_revised": 1.0 if revised else 0.0,
-                        "has_counterexample": 0.0,
-                        "has_compiler_error": 1.0,
-                    },
-                    artifacts=compiler_error_artifacts,
-                )
-            print(f"[Score] theorem_nc={theorem_nc}, lemma_ncs={lemma_ncs}")
-            
-            if theorem_nc > 0 and lemma_ncs:
-                node_score = compute_node_score(theorem_nc, lemma_ncs, weight=0.9)
+                # 完全成功，无 sorry - 设置满分
+                error_score = 0.1  # 完全成功时 error_score 也给满分
+                node_score = 0.9  # 满分（与 compute_node_score 的 weight 一致）
+                # 不需要计算 lemma_ncs，保持空列表
+            else:
+                # 有 sorry，计算 node_score
+                theorem_nc = get_theorem_node_count()
+                try:
+                    lemma_ncs, lemma_consts_jsons = get_consts_counts(scoring_code)
+                except CounterexampleFound as e:
+                    print(f"[Score] Counterexample found: {e.messages}")
+                    counterexample_artifacts = {"status": "counterexample_found", "counterexample": e.messages}
+                    # 如果是 revise 后的代码，传递 revised_code
+                    if revised and scoring_code != original_code:
+                        counterexample_artifacts["revised_code"] = scoring_code
+                    return EvaluationResult(
+                        metrics={
+                            "combined_score": 0.0,
+                            "error_score": error_score,
+                            "node_score": 0.0,
+                            "error_count": float(first_error_count),
+                            "has_sorry": 1.0,
+                            "is_revised": 1.0 if revised else 0.0,
+                            "has_counterexample": 1.0,
+                            "has_compiler_error": 0.0,
+                        },
+                        artifacts=counterexample_artifacts,
+                    )
+                except CompilerError as e:
+                    print(f"[Score] Compiler error in countNodesAll: {e.message}")
+                    compiler_error_artifacts = {"status": "compiler_error", "error": e.message}
+                    if revised and scoring_code != original_code:
+                        compiler_error_artifacts["revised_code"] = scoring_code
+                    return EvaluationResult(
+                        metrics={
+                            "combined_score": 0.0,
+                            "error_score": error_score,
+                            "node_score": 0.0,
+                            "error_count": float(first_error_count),
+                            "has_sorry": 1.0,
+                            "is_revised": 1.0 if revised else 0.0,
+                            "has_counterexample": 0.0,
+                            "has_compiler_error": 1.0,
+                        },
+                        artifacts=compiler_error_artifacts,
+                    )
+                print(f"[Score] theorem_nc={theorem_nc}, lemma_ncs={lemma_ncs}")
+                
+                if theorem_nc > 0 and lemma_ncs:
+                    node_score = compute_node_score(theorem_nc, lemma_ncs, weight=0.9)
         
         # ===== 计算总分 =====
         combined_score = error_score + node_score
@@ -817,7 +822,16 @@ def evaluate(program_path: str) -> EvaluationResult:
         # artifacts 报告：原始程序的 error message + revised_code 的 unsolved_goals
         is_revised = revised and scoring_is_valid_with_sorry
         
-        if is_revised:
+        if scoring_is_valid_no_sorry:
+            # 完全成功，无 sorry
+            artifacts = {
+                "message": "Proof complete! No sorry found.",
+                "status": "prove_no_sorry",
+            }
+            # 如果是 revise 后才成功的，传递 revised_code
+            if revised and scoring_code != original_code:
+                artifacts["revised_code"] = scoring_code
+        elif is_revised:
             # revise 成功，报告 revise 后代码的 unsolved_goals（就像没有语法错误一样）
             # 将 revised_code 传递给 process_parallel.py，让演化使用修复后的代码
             scoring_unsolved_goals = extract_unsolved_goals(scoring_result)
@@ -887,6 +901,10 @@ def evaluate(program_path: str) -> EvaluationResult:
                         for g in revised_unsolved_goals
                     ])
                     artifacts["_revised_unsolved_goals"] = revised_goals_str
+        
+        # 保存 consts_jsons 用于 database 计算 difference 特征
+        if lemma_consts_jsons:
+            artifacts["consts_jsons"] = lemma_consts_jsons
         
         return EvaluationResult(
             metrics={

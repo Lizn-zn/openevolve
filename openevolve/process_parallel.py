@@ -5,9 +5,8 @@ Process-based parallel controller for true parallelism
 import asyncio
 import logging
 import multiprocessing as mp
-import pickle
-import signal
 import time
+import json
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass
@@ -274,6 +273,9 @@ def _run_iteration_worker(
             # Remove revised_code from artifacts to avoid storing it twice
             del artifacts["revised_code"]
 
+        # Extract ast_nodes (consts_jsons) for MAP-Elites difference calculation
+        ast_nodes = artifacts.get("consts_jsons") if artifacts else None
+
         # Create child program
         child_program = Program(
             id=child_id,
@@ -289,6 +291,7 @@ def _run_iteration_worker(
                 "island": parent_island,
                 "evolution_model": model_name,  # 保存使用的模型名称
             },
+            ast_nodes=ast_nodes,  # For MAP-Elites difference feature
         )
 
         iteration_time = time.time() - iteration_start
